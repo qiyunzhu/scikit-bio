@@ -33,6 +33,7 @@ from ._c_me import (
     _bal_all_swaps,
     _bal_avgdist_insert_dynamic,
     _bal_avgdist_insert_guided,
+    _bal_avgdist_insert_guided_preorder,
 )
 from ._utils import _validate_dm, _validate_dm_and_tree
 from skbio.stats.distance import DistanceMatrix
@@ -520,7 +521,7 @@ def _gme(dm):
     return tree, lens
 
 
-def _bme(dm, parallel=None, chunksize=10000, minclade=100):
+def _bme(dm, parallel=None, chunksize=10000, minclade=100, preorder=False):
     r"""Perform balanced minimum evolution (BME) for phylogenetic reconstruction.
 
     Parameters
@@ -552,6 +553,8 @@ def _bme(dm, parallel=None, chunksize=10000, minclade=100):
         func = _bal_avgdist_insert
     elif chunksize:
         func = _bal_avgdist_insert_dynamic
+    elif preorder:
+        func = _bal_avgdist_insert_guided_preorder
     else:
         func = _bal_avgdist_insert_guided
 
@@ -591,7 +594,9 @@ def _bme(dm, parallel=None, chunksize=10000, minclade=100):
         target = _bal_min_branch(lens, adm, adk, tree, preodr)
 
         # Update balanced average distance matrix between all subtrees.
-        func(adm, target, adk, tree, postodr, powers, stack, chunksize, minclade)
+        func(
+            adm, target, adk, tree, preodr, postodr, powers, stack, chunksize, minclade
+        )
 
         # Insert new taxon into tree.
         _insert_taxon(k, target, tree, preodr, postodr, use_depth=True)

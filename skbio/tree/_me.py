@@ -31,11 +31,10 @@ from ._c_me import (
     _ols_all_swaps,
     _ols_corner_swaps,
     _bal_all_swaps,
-    _bal_avgdist_insert_static,
-    _bal_avgdist_insert_dynamic,
-    _bal_avgdist_insert_dynamic_rev,
-    _bal_avgdist_insert_guided,
-    _bal_avgdist_insert_guided_rev,
+    _bal_avgdist_insert_0,
+    _bal_avgdist_insert_1,
+    _bal_avgdist_insert_2,
+    _bal_avgdist_insert_3,
 )
 from ._utils import _validate_dm, _validate_dm_and_tree
 from skbio.stats.distance import DistanceMatrix
@@ -523,9 +522,7 @@ def _gme(dm):
     return tree, lens
 
 
-def _bme(
-    dm, parallel=None, chunksize=10000, minclade=100, adaptive=False, reverse=False
-):
+def _bme(dm, parallel=0):
     r"""Perform balanced minimum evolution (BME) for phylogenetic reconstruction.
 
     Parameters
@@ -552,20 +549,14 @@ def _bme(
 
     """
     dtype = dm.dtype
-
-    # chunksize = chunksize / ops if adpative else chunksize
-    args = (chunksize, minclade, adaptive)
-    if not parallel:
-        func = _bal_avgdist_insert
-        args = ()
-    elif parallel == "static":
-        func = _bal_avgdist_insert_static
-    elif parallel == "dynamic":
-        func = (
-            _bal_avgdist_insert_dynamic_rev if reverse else _bal_avgdist_insert_dynamic
-        )
-    elif parallel == "guided":
-        func = _bal_avgdist_insert_guided_rev if reverse else _bal_avgdist_insert_guided
+    if parallel == 0:
+        func = _bal_avgdist_insert_0
+    elif parallel == 1:
+        func = _bal_avgdist_insert_1
+    elif parallel == 2:
+        func = _bal_avgdist_insert_2
+    elif parallel == 3:
+        func = _bal_avgdist_insert_3
     else:
         raise ValueError(f"Invalid OpenMP scheduling policy: '{parallel}'.")
 
@@ -605,7 +596,7 @@ def _bme(
         target = _bal_min_branch(lens, adm, adk, tree, preodr)
 
         # Update balanced average distance matrix between all subtrees.
-        func(adm, target, adk, tree, postodr, powers, stack, *args)
+        func(adm, target, adk, tree, postodr, powers, stack)
 
         # Insert new taxon into tree.
         _insert_taxon(k, target, tree, preodr, postodr, use_depth=True)

@@ -46,37 +46,6 @@ cdef int MINCLADE = 100
 # and widely adopted.
 # ------------------------------------------------------------------------------------
 
-cdef (int, bint) config_prange(
-    int ops,
-    int chunksize,
-    int minclade,
-    bint adaptive,
-) noexcept nogil:
-    """Determine prange schedule.
-
-    Returns
-    -------
-    chunksize : int
-    use_threads : bint
-
-    """
-    cdef int chunk
-    cdef bint use_threads
-
-    # determine chunk size
-    if adaptive:
-        chunk = max(1, chunksize // ops)
-    else:
-        chunk = chunksize
-
-    # determine whether to use threads
-    use_threads = ops > max(chunk, minclade)
-
-    # evenly distribute chunks
-    # chunk = -(-ops // num_threads)
-    return chunk, use_threads
-
-
 def _preorder(
     Py_ssize_t[::1] order,
     Py_ssize_t[:, ::1] tree,
@@ -1214,7 +1183,7 @@ def _bal_avgdist_insert_p(
         anc_i += 1
 
 
-def _bal_avgdist_insert_static(
+def _bal_avgdist_insert_0(
     floating[:, ::1] adm,
     Py_ssize_t target,
     floating[:, ::1] adk,
@@ -1222,9 +1191,6 @@ def _bal_avgdist_insert_static(
     Py_ssize_t[::1] postodr,
     floating[::1] powers,
     Py_ssize_t[::1] stack,
-    int chunksize,
-    int minclade,
-    bint adaptive,
 ):
     cdef Py_ssize_t i, j, ii, jj, anc_i
     cdef Py_ssize_t parent, sibling, depth
@@ -1232,8 +1198,7 @@ def _bal_avgdist_insert_static(
     cdef Py_ssize_t a, b
     cdef floating power, diff
 
-    cdef int ops, chunk
-    cdef bint use_threads
+    cdef int ops
 
     cdef Py_ssize_t m = tree[0, 4] + 1
     cdef Py_ssize_t n = 2 * m - 3
@@ -1247,11 +1212,7 @@ def _bal_avgdist_insert_static(
         adm[0, link] = adm[link, 0] = 0.5 * (adm[a1, 0] + adm[a2, 0])
 
         ### 1
-        chunk, use_threads = config_prange(n - 1, chunksize, minclade, adaptive)
-        for a in prange(
-            1, n, nogil=True, schedule="static", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for a in range(1, n):
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, 0])
             ii = tree[a, 7]
@@ -1273,11 +1234,7 @@ def _bal_avgdist_insert_static(
     ops = tree[target, 4] * 2 - 2
     if ops > 0:
         ii = tree[target, 7]
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - ops, ii, nogil=True, schedule="static", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in range(ii - ops, ii):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = adm[a, target]
@@ -1308,11 +1265,7 @@ def _bal_avgdist_insert_static(
         ### 3
         ii = tree[cousin, 7]
         ops = tree[cousin, 4] * 2 - 1
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - ops + 1, ii + 1, nogil=True, schedule="static", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in range(ii - ops + 1, ii + 1):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, target])
@@ -1331,7 +1284,7 @@ def _bal_avgdist_insert_static(
         anc_i += 1
 
 
-def _bal_avgdist_insert_dynamic(
+def _bal_avgdist_insert_1(
     floating[:, ::1] adm,
     Py_ssize_t target,
     floating[:, ::1] adk,
@@ -1339,9 +1292,6 @@ def _bal_avgdist_insert_dynamic(
     Py_ssize_t[::1] postodr,
     floating[::1] powers,
     Py_ssize_t[::1] stack,
-    int chunksize,
-    int minclade,
-    bint adaptive,
 ):
     cdef Py_ssize_t i, j, ii, jj, anc_i
     cdef Py_ssize_t parent, sibling, depth
@@ -1349,8 +1299,7 @@ def _bal_avgdist_insert_dynamic(
     cdef Py_ssize_t a, b
     cdef floating power, diff
 
-    cdef int ops, chunk
-    cdef bint use_threads
+    cdef int ops
 
     cdef Py_ssize_t m = tree[0, 4] + 1
     cdef Py_ssize_t n = 2 * m - 3
@@ -1364,16 +1313,7 @@ def _bal_avgdist_insert_dynamic(
         adm[0, link] = adm[link, 0] = 0.5 * (adm[a1, 0] + adm[a2, 0])
 
         ### 1
-        # chunk = max(1, chunksize // n) if adaptive else chunksize
-        # for a in prange(
-        #     1, n, nogil=True, schedule="dynamic", chunksize=chunk,
-        #     use_threads_if=chunk < n - 1
-        # ):
-        chunk, use_threads = config_prange(n - 1, chunksize, minclade, adaptive)
-        for a in prange(
-            1, n, nogil=True, schedule="dynamic", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for a in prange(1, n, nogil=True, schedule="static"):
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, 0])
             ii = tree[a, 7]
@@ -1395,16 +1335,7 @@ def _bal_avgdist_insert_dynamic(
     ops = tree[target, 4] * 2 - 2
     if ops > 0:
         ii = tree[target, 7]
-        # chunk = max(1, chunksize // ops) if adaptive else chunksize
-        # for i in prange(
-        #     ii - ops + 1, ii, nogil=True, schedule="dynamic", chunksize=chunk,
-        #     use_threads_if=chunk < ops
-        # ):
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - ops, ii, nogil=True, schedule="dynamic", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in prange(ii - ops, ii, nogil=True, schedule="static"):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = adm[a, target]
@@ -1413,7 +1344,6 @@ def _bal_avgdist_insert_dynamic(
             for j in range(jj - tree[a, 4] * 2 + 2, jj):
                 b = postodr[j]
                 adm[a, b] = adm[b, a] = adm[a, b] + power * (adk[b, 0] - adm[target, b])
-
         for i in range(ii - ops, ii):
             a = postodr[i]
             adm[a, target] = adm[target, a] = 0.5 * (adm[a, target] + adk[a, 0])
@@ -1436,16 +1366,7 @@ def _bal_avgdist_insert_dynamic(
         ### 3
         ii = tree[cousin, 7]
         ops = tree[cousin, 4] * 2 - 1
-        # chunk = max(1, chunksize // ops) if adaptive else chunksize
-        # for i in prange(
-        #     ii - ops + 1, ii + 1, nogil=True, schedule="dynamic", chunksize=chunk,
-        #     use_threads_if=chunk < ops
-        # ):
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - ops + 1, ii + 1, nogil=True, schedule="dynamic", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in prange(ii - ops + 1, ii + 1, nogil=True, schedule="static"):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, target])
@@ -1464,7 +1385,7 @@ def _bal_avgdist_insert_dynamic(
         anc_i += 1
 
 
-def _bal_avgdist_insert_dynamic_rev(
+def _bal_avgdist_insert_2(
     floating[:, ::1] adm,
     Py_ssize_t target,
     floating[:, ::1] adk,
@@ -1472,9 +1393,6 @@ def _bal_avgdist_insert_dynamic_rev(
     Py_ssize_t[::1] postodr,
     floating[::1] powers,
     Py_ssize_t[::1] stack,
-    int chunksize,
-    int minclade,
-    bint adaptive,
 ):
     cdef Py_ssize_t i, j, ii, jj, anc_i
     cdef Py_ssize_t parent, sibling, depth
@@ -1482,8 +1400,7 @@ def _bal_avgdist_insert_dynamic_rev(
     cdef Py_ssize_t a, b
     cdef floating power, diff
 
-    cdef int ops, chunk
-    cdef bint use_threads
+    cdef int ops
 
     cdef Py_ssize_t m = tree[0, 4] + 1
     cdef Py_ssize_t n = 2 * m - 3
@@ -1497,11 +1414,7 @@ def _bal_avgdist_insert_dynamic_rev(
         adm[0, link] = adm[link, 0] = 0.5 * (adm[a1, 0] + adm[a2, 0])
 
         ### 1
-        chunk, use_threads = config_prange(n - 1, chunksize, minclade, adaptive)
-        for a in prange(
-            1, n, nogil=True, schedule="dynamic", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for a in prange(1, n, nogil=True, schedule="static", use_threads_if=False):
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, 0])
             ii = tree[a, 7]
@@ -1523,11 +1436,7 @@ def _bal_avgdist_insert_dynamic_rev(
     ops = tree[target, 4] * 2 - 2
     if ops > 0:
         ii = tree[target, 7]
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - 1, ii - ops - 1, -1, nogil=True, schedule="dynamic", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in prange(ii - ops, ii, nogil=True, schedule="static", use_threads_if=False):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = adm[a, target]
@@ -1558,11 +1467,7 @@ def _bal_avgdist_insert_dynamic_rev(
         ### 3
         ii = tree[cousin, 7]
         ops = tree[cousin, 4] * 2 - 1
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii, ii - ops, -1, nogil=True, schedule="dynamic", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in prange(ii - ops + 1, ii + 1, nogil=True, schedule="static", use_threads_if=False):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, target])
@@ -1581,7 +1486,7 @@ def _bal_avgdist_insert_dynamic_rev(
         anc_i += 1
 
 
-def _bal_avgdist_insert_guided(
+def _bal_avgdist_insert_3(
     floating[:, ::1] adm,
     Py_ssize_t target,
     floating[:, ::1] adk,
@@ -1589,9 +1494,6 @@ def _bal_avgdist_insert_guided(
     Py_ssize_t[::1] postodr,
     floating[::1] powers,
     Py_ssize_t[::1] stack,
-    int chunksize,
-    int minclade,
-    bint adaptive,
 ):
     cdef Py_ssize_t i, j, ii, jj, anc_i
     cdef Py_ssize_t parent, sibling, depth
@@ -1599,8 +1501,7 @@ def _bal_avgdist_insert_guided(
     cdef Py_ssize_t a, b
     cdef floating power, diff
 
-    cdef int ops, chunk
-    cdef bint use_threads
+    cdef int ops
 
     cdef Py_ssize_t m = tree[0, 4] + 1
     cdef Py_ssize_t n = 2 * m - 3
@@ -1614,11 +1515,7 @@ def _bal_avgdist_insert_guided(
         adm[0, link] = adm[link, 0] = 0.5 * (adm[a1, 0] + adm[a2, 0])
 
         ### 1
-        chunk, use_threads = config_prange(n - 1, chunksize, minclade, adaptive)
-        for a in prange(
-            1, n, nogil=True, schedule="guided", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for a in prange(1, n, nogil=True, schedule="static", num_threads=1):
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, 0])
             ii = tree[a, 7]
@@ -1627,6 +1524,7 @@ def _bal_avgdist_insert_guided(
                 b = postodr[i]
                 adm[a, b] = adm[b, a] = adm[a, b] + power * (adk[b, 0] - adm[0, b])
         return
+
     parent, sibling, depth = tree[target, 2], tree[target, 3], tree[target, 5]
     depth_1 = depth + 1
     adm[tip, link] = adm[link, tip] = adk[target, 1]
@@ -1639,11 +1537,7 @@ def _bal_avgdist_insert_guided(
     ops = tree[target, 4] * 2 - 2
     if ops > 0:
         ii = tree[target, 7]
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - ops, ii, nogil=True, schedule="guided", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in prange(ii - ops, ii, nogil=True, schedule="static", num_threads=1):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = adm[a, target]
@@ -1674,127 +1568,7 @@ def _bal_avgdist_insert_guided(
         ### 3
         ii = tree[cousin, 7]
         ops = tree[cousin, 4] * 2 - 1
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - ops + 1, ii + 1, nogil=True, schedule="guided", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
-            a = postodr[i]
-            adm[a, tip] = adm[tip, a] = adk[a, 0]
-            adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, target])
-            diff = adk[a, 0] - adm[a, target]
-            for j in range(anc_i):
-                b = stack[j]
-                adm[a, b] = adm[b, a] = adm[a, b] + powers[depth_1 - tree[b, 5]] * diff
-            jj = tree[a, 7]
-            power = powers[depth_diff + tree[a, 5]]
-            for j in range(jj - tree[a, 4] * 2 + 2, jj):
-                b = postodr[j]
-                adm[a, b] = adm[b, a] = adm[a, b] + power * (
-                    adk[b, 0] - adm[b, target]
-                )
-        curr = anc
-        anc_i += 1
-
-
-def _bal_avgdist_insert_guided_rev(
-    floating[:, ::1] adm,
-    Py_ssize_t target,
-    floating[:, ::1] adk,
-    Py_ssize_t[:, ::1] tree,
-    Py_ssize_t[::1] postodr,
-    floating[::1] powers,
-    Py_ssize_t[::1] stack,
-    int chunksize,
-    int minclade,
-    bint adaptive,
-):
-    cdef Py_ssize_t i, j, ii, jj, anc_i
-    cdef Py_ssize_t parent, sibling, depth
-    cdef Py_ssize_t curr, anc, cousin, depth_1, depth_diff
-    cdef Py_ssize_t a, b
-    cdef floating power, diff
-
-    cdef int ops, chunk
-    cdef bint use_threads
-
-    cdef Py_ssize_t m = tree[0, 4] + 1
-    cdef Py_ssize_t n = 2 * m - 3
-    cdef Py_ssize_t link = n
-    cdef Py_ssize_t tip = n + 1
-
-    if target == 0:
-        adm[0, tip] = adm[tip, 0] = adk[0, 1]
-        adm[link, tip] = adm[tip, link] = adk[0, 0]
-        a1, a2 = tree[0, 0], tree[0, 1]
-        adm[0, link] = adm[link, 0] = 0.5 * (adm[a1, 0] + adm[a2, 0])
-
-        ### 1
-        chunk, use_threads = config_prange(n - 1, chunksize, minclade, adaptive)
-        for a in prange(
-            1, n, nogil=True, schedule="guided",chunksize=chunk,
-            use_threads_if=use_threads
-        ):
-            adm[a, tip] = adm[tip, a] = adk[a, 0]
-            adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, 0])
-            ii = tree[a, 7]
-            power = powers[tree[a, 5] + 1]
-            for i in range(ii - tree[a, 4] * 2 + 2, ii):
-                b = postodr[i]
-                adm[a, b] = adm[b, a] = adm[a, b] + power * (adk[b, 0] - adm[0, b])
-        return
-    parent, sibling, depth = tree[target, 2], tree[target, 3], tree[target, 5]
-    depth_1 = depth + 1
-    adm[tip, link] = adm[link, tip] = adk[target, 1]
-    adm[target, link] = adm[link, target] = 0.5 * (
-        adm[target, sibling] + adm[target, parent]
-    )
-    adm[target, tip] = adm[tip, target] = adk[target, 0]
-
-    ### 2
-    ops = tree[target, 4] * 2 - 2
-    if ops > 0:
-        ii = tree[target, 7]
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii - 1, ii - ops - 1, -1, nogil=True, schedule="guided", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
-            a = postodr[i]
-            adm[a, tip] = adm[tip, a] = adk[a, 0]
-            adm[a, link] = adm[link, a] = adm[a, target]
-            jj = tree[a, 7]
-            power = powers[tree[a, 5] - depth + 1]
-            for j in range(jj - tree[a, 4] * 2 + 2, jj):
-                b = postodr[j]
-                adm[a, b] = adm[b, a] = adm[a, b] + power * (adk[b, 0] - adm[target, b])
-        for i in range(ii - ops, ii):
-            a = postodr[i]
-            adm[a, target] = adm[target, a] = 0.5 * (adm[a, target] + adk[a, 0])
-
-    anc_i = 0
-    curr = target
-    while curr:
-        stack[anc_i] = anc = tree[curr, 2]
-        depth_diff = depth - 2 * tree[anc, 5]
-        adm[anc, tip] = adm[tip, anc] = adk[anc, 1]
-        adm[anc, link] = adm[link, anc] = 0.5 * (adk[anc, 1] + adm[anc, target])
-        diff = adk[anc, 1] - adm[target, anc]
-        for i in range(anc_i):
-            a = stack[i]
-            adm[anc, a] = adm[a, anc] = adm[anc, a] + powers[
-                depth_1 - tree[a, 5]
-            ] * diff
-        cousin = tree[curr, 3]
-
-        ### 3
-        ii = tree[cousin, 7]
-        ops = tree[cousin, 4] * 2 - 1
-        chunk, use_threads = config_prange(ops, chunksize, minclade, adaptive)
-        for i in prange(
-            ii, ii - ops, -1, nogil=True, schedule="guided", chunksize=chunk,
-            use_threads_if=use_threads
-        ):
+        for i in prange(ii - ops + 1, ii + 1, nogil=True, schedule="static", num_threads=1):
             a = postodr[i]
             adm[a, tip] = adm[tip, a] = adk[a, 0]
             adm[a, link] = adm[link, a] = 0.5 * (adk[a, 0] + adm[a, target])

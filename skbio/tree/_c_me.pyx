@@ -2493,10 +2493,10 @@ def _bal_avgdist_fill(
 
 def _insert_taxon(
     Py_ssize_t taxon,
-    Py_ssize_t tag_i,
+    Py_ssize_t tag_i,  # preorder index of target node
+    Py_ssize_t aft_i,  # preorder index of node immediately after target clade
     Py_ssize_t[:, ::1] tree,
     Py_ssize_t[::1] preodr,
-    Py_ssize_t[::1] sizes,
 ):
     r"""Insert a taxon between a target node and its parent.
 
@@ -2541,8 +2541,6 @@ def _insert_taxon(
     cdef Py_ssize_t left, right, parent, sibling, size
     cdef Py_ssize_t side
 
-    cdef Py_ssize_t after  # preorder index of node immediately after clade
-
     # determine tree dimensions
     # typically n = 2 * taxon - 3, but this function doesn't enforce this
     cdef Py_ssize_t m = taxon - 1
@@ -2568,7 +2566,6 @@ def _insert_taxon(
         # root
         node[0] = link
         node[1] = tip
-        # sizes[0] = n + 2
 
         # link
         node = &tree[link, 0]
@@ -2576,7 +2573,6 @@ def _insert_taxon(
         node[1] = right
         node[2] = 0
         node[3] = tip
-        # sizes[link] = n
 
         # tip
         node = &tree[tip, 0]
@@ -2584,7 +2580,6 @@ def _insert_taxon(
         node[1] = taxon
         node[2] = 0
         node[3] = link
-        # sizes[tip] = 1
 
         # preorder
         # for i in range(1, n):
@@ -2593,11 +2588,6 @@ def _insert_taxon(
 
         preodr[1] = link
         preodr[n + 1] = tip
-
-        # postorder
-        # postodr[n - 1] = link
-        # postodr[n] = tip
-        # postodr[n + 1] = 0
 
         # entire tree depth + 1
         # if use_depth:
@@ -2614,7 +2604,6 @@ def _insert_taxon(
         right = node[1]
         parent = node[2]
         sibling = node[3]
-        size = sizes[target]
 
         side = int(tree[parent, 0] != target)
         tree[parent, side] = link
@@ -2622,16 +2611,12 @@ def _insert_taxon(
         node[2] = link
         node[3] = tip
 
-        # preorder index of node after clade
-        after = tag_i + size
-
         # link
         node = &tree[link, 0]
         node[0] = target
         node[1] = tip
         node[2] = parent
         node[3] = sibling
-        # sizes[link] = size + 2
 
         # tip
         node = &tree[tip, 0]
@@ -2639,38 +2624,29 @@ def _insert_taxon(
         node[1] = taxon
         node[2] = link
         node[3] = target
-        # sizes[tip] = 1
 
         # clade depth +1
         # if use_depth:
         #     depth = depths[target]
         #     depths[link] = depth
         #     depths[tip] = depth + 1
-        #     for i in range(index, after):
+        #     for i in range(tag_i, aft_i):
         #         depths[preodr[i]] += 1
 
         # preorder shift: nodes after clade +2, tip inserted after clade, nodes within
         # clade +1, link inserted before clade
-        # for i in range(after, n):
+        # for i in range(aft_i, n):
         #     preodr[i + 2] = preodr[i]
-        memmove(&preodr[after + 2], &preodr[after], <size_t>(
-            (n - after) * intsize
+        memmove(&preodr[aft_i + 2], &preodr[aft_i], <size_t>(
+            (n - aft_i) * intsize
         ))
-        preodr[after + 1] = tip
-        # for i in range(index, after):
+        preodr[aft_i + 1] = tip
+        # for i in range(tag_i, aft_i):
         #     preodr[i + 1] = preodr[i]
         memmove(&preodr[tag_i + 1], &preodr[tag_i], <size_t>(
-            (after - tag_i) * intsize
+            (aft_i - tag_i) * intsize
         ))
         preodr[tag_i] = link
-
-        # postorder shift: all nodes after clade +2, tip and link inserted after clade
-        # for i in range(n - 1, post_i, -1):
-        #     k = postodr[i]
-        #     tree[k, 7] += 2
-        #     postodr[i + 2] = k
-        # postodr[post_i + 2] = link
-        # postodr[post_i + 1] = tip
 
         # size +2 from parent to root
         # curr = link

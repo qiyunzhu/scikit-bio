@@ -1287,7 +1287,7 @@ def _bal_avgdist_insert(
     cdef Py_ssize_t cur_s, cuz_s
 
     # depths (number of branches to root)
-    cdef Py_ssize_t depth = depths[tag]
+    cdef Py_ssize_t depth = depths[tag_i]
 
     # intermediate variables
     cdef floating cell    # specific value in `adm` (a matrix)
@@ -1321,7 +1321,6 @@ def _bal_avgdist_insert(
         # Update sizes and depths (see illustration above).
         sizes[0] = n + 2
         sizes[lnk] = n
-        depths[lnk] = depths[kay] = 1
 
         # Transfer distance between k and root (upper).
         adm_t[kay]= adku[0]
@@ -1358,7 +1357,7 @@ def _bal_avgdist_insert(
             # NOTE: Although depth is unnecessary for tips, having an `if` check here
             # may not benefit performance because interleaved internal/tips are bad for
             # branch prediction.
-            depths[a] = deg = depths[a] + 1
+            depths[i] = deg = depths[i] + 1
 
             # Calculate the distances between the node (upper, containing k) and each
             # of its descendants (lower). We can now reuse the intermediate calculated
@@ -1384,8 +1383,7 @@ def _bal_avgdist_insert(
 
     # Update sizes and depths.
     sizes[lnk] = size + 2
-    depths[lnk] = depth = depths[tag]
-    depths[kay] = depths[tag] = depth + 1
+    depths[tag_i] = depth + 1
 
     # Distance between k (lower) and link (upper) equals to that between k and the
     # upper subtree of target.
@@ -1420,7 +1418,7 @@ def _bal_avgdist_insert(
         adm_t[a] = 0.5 * (diff + cell)
 
         adkl[i] = diff - cell  # intermediate
-        depths[a] = deg = depths[a] + 1  # depth +1
+        depths[i] = deg = depths[i] + 1  # depth +1
 
         # Within the clade, find all ancestor (a) - descendant (b) pairs, and calculate
         # the distance between a (upper, with k) and b (lower).
@@ -1482,7 +1480,7 @@ def _bal_avgdist_insert(
 
                 # Calculate the distance between a (upper, with k) and each of its
                 # descendants (lower).
-                npot = npots[depths[a] + deg]
+                npot = npots[depths[i] + deg]
                 for j in range(i + 1, i + sizes[a]):
                     adm_a[order[j]] += npot * adkl[j]
 
@@ -1504,7 +1502,7 @@ def _bal_avgdist_insert(
                 adkl[i] = diff = diff - cell
                 for j in range(level):
                     adm_a[ancs[j]] += npots_2[j] * diff
-                npot = npots[depths[a] + deg]
+                npot = npots[depths[i] + deg]
                 for j in range(i + 1, i + sizes[a]):
                     adm_a[order[j]] += npot * adkl[j]
 
@@ -1631,7 +1629,7 @@ def _bal_insert_plan(
 
     cdef Py_ssize_t size = sizes[tag]
     cdef Py_ssize_t cuz_s
-    cdef Py_ssize_t depth = depths[tag]
+    cdef Py_ssize_t depth = depths[tag_i]
 
     cdef floating cell, diff  # intermediates
 
@@ -1669,7 +1667,6 @@ def _bal_insert_plan(
 
         sizes[0] = n + 2
         sizes[lnk] = n
-        depths[lnk] = depths[kay] = 1
 
         # There is only one segment, which is the entire tree.
         segs[0] = 0
@@ -1688,7 +1685,7 @@ def _bal_insert_plan(
                 adm[a, kay] = diff
                 adm_l[a] = 0.5 * (diff + cell)
                 adkl[i] = diff - cell
-                depths[a] += 1
+                depths[i] += 1
                 # this +1 here is important; it cannot be postponed to `_insert_taxon`
                 # TODO: double-check the maths
 
@@ -1698,8 +1695,7 @@ def _bal_insert_plan(
 
     sizes[lnk] = size + 2
     pairs[lnk] = pairs[tag] + size + 1
-    depths[lnk] = depth
-    depths[kay] = depths[tag] = depth + 1
+    depths[tag_i] = depth + 1
 
     # accumulative horizontal and vertical operations
     achori = 0
@@ -1733,7 +1729,7 @@ def _bal_insert_plan(
             adm_l[a] = cell
             adm_t[a] = 0.5 * (diff + cell)
             adkl[i] = diff - cell
-            depths[a] += 1
+            depths[i] += 1
 
     ### Step 3: Distances among nodes outside the clade. ###
 
@@ -2390,7 +2386,7 @@ def _bal_avgdist_fill(
                     adm[a, kay] = diff
                     adm_l[a] = 0.5 * (diff + cell)
                     adkl[i] = diff - cell
-                    depths[a] += 1
+                    depths[i] += 1
 
             else:
                 for i in prange(n):
@@ -2414,7 +2410,7 @@ def _bal_avgdist_fill(
                             adm[a, kay] = diff
                             adm_l[a] = cell
                             adm_t[a] = 0.5 * (diff + cell)
-                            depths[a] += 1
+                            depths[i] += 1
 
                         # after target clade (right cousins)
                         else:
@@ -2460,7 +2456,7 @@ def _bal_avgdist_fill(
                         # But removing this `if` will add two array reads to this memory-
                         # bound algorithm. Test suggests keeping the current code is fine.
                         if (size := sizes[a]) > 1:
-                            npot = npots[depths[a] + deg]
+                            npot = npots[depths[i] + deg]
                             for j in range(i + 1, i + size):
                                 adm_a[order[j]] += npot * adkl[j]
 
@@ -2480,13 +2476,35 @@ def _bal_avgdist_fill(
 
                     # both fills are guaranteed
                     if (size := sizes[a]) > 1:
-                        npot = npots[depths[a] + deg]
+                        npot = npots[depths[i] + deg]
                         for j in range(i + 1, i + size):
                             adm_a[order[j]] += npot * adkl[j]
 
                     for j in range(level):
                         adm_0[ancx[j] + a] += npots_2[j] * diff
                         # adm_0[ancx[j] + a] += ldexp(diff, -2 - j)
+
+
+def _add_depth(
+    Py_ssize_t n,
+    Py_ssize_t tag_i,
+    Py_ssize_t aft_i,
+    Py_ssize_t depth,
+    Py_ssize_t[::1] depths,
+):
+    cdef size_t intsize = sizeof(Py_ssize_t)
+    if tag_i == 0:
+        memmove(&depths[2], &depths[1], <size_t>((n - 1) * intsize))
+        depths[1] = depths[n + 1] = 1
+    else:
+        memmove(&depths[aft_i + 2], &depths[aft_i], <size_t>(
+            (n - aft_i) * intsize
+        ))
+        depths[aft_i + 1] = depth + 1
+        memmove(&depths[tag_i + 1], &depths[tag_i], <size_t>(
+            (aft_i - tag_i) * intsize
+        ))
+        depths[tag_i] = depth
 
 
 def _insert_taxon(

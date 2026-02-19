@@ -618,6 +618,9 @@ def _bme(dm, parallel=500, method=0, factor=16):
     # node indices in preorder
     order = np.empty(N, dtype=int)
 
+    # mapping of nodes to preorder
+    index = np.empty(N, dtype=int)
+
     # number of nodes (tips and internal) within each clade
     sizes = np.empty(N, dtype=int)
 
@@ -671,6 +674,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
     sizes[:3] = [3, 1, 1]
     depths[:3] = [0, 1, 1]
     order[:3] = [0, 1, 2]
+    index[:3] = [0, 1, 2]
 
     # balanced average distances between the 3 taxa
     adm[0, 1] = adm[1, 0] = dm[0, 1]
@@ -716,7 +720,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         times[k, 4] = perf_counter()
 
         # Update tree topology with the inserted taxon.
-        _insert_taxon(k, target, after, tree, order)
+        _insert_taxon(k, target, after, tree, order, index)
         times[k, 5] = perf_counter()
 
         n += 2
@@ -813,7 +817,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         )
         times[k, 4] = perf_counter()
 
-        _insert_taxon(k, target, after, tree, order)
+        _insert_taxon(k, target, after, tree, order, index)
         times[k, 5] = perf_counter()
 
         n += 2
@@ -882,7 +886,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         )
         times[k, 4] = perf_counter()
 
-        _insert_taxon(k, target, after, tree, order)
+        _insert_taxon(k, target, after, tree, order, index)
         times[k, 5] = perf_counter()
 
         n += 2

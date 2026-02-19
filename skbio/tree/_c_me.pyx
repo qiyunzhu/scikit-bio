@@ -2496,7 +2496,8 @@ def _insert_taxon(
     Py_ssize_t tag_i,  # preorder index of target node
     Py_ssize_t aft_i,  # preorder index of node immediately after target clade
     Py_ssize_t[:, ::1] tree,
-    Py_ssize_t[::1] preodr,
+    Py_ssize_t[::1] order,
+    Py_ssize_t[::1] index,
 ):
     r"""Insert a taxon between a target node and its parent.
 
@@ -2538,6 +2539,7 @@ def _insert_taxon(
     # parts, the reality according to my tests is that Cython code is significantly
     # faster than NumPy, and greatly reduces the overall runtime.
 
+    cdef Py_ssize_t k
     cdef Py_ssize_t left, right, parent, sibling, size
     cdef Py_ssize_t side
 
@@ -2548,7 +2550,7 @@ def _insert_taxon(
     cdef Py_ssize_t link = n
     cdef Py_ssize_t tip = n + 1
 
-    cdef Py_ssize_t target = preodr[tag_i]
+    cdef Py_ssize_t target = order[tag_i]
 
     cdef Py_ssize_t* node
 
@@ -2582,12 +2584,30 @@ def _insert_taxon(
         node[3] = link
 
         # preorder
-        # for i in range(1, n):
-        #     preodr[i + 1] = preodr[i]
-        memmove(&preodr[2], &preodr[1], <size_t>((n - 1) * intsize))
+        for i in range(1, n):
+            index[i] += 1
+        index[link] = 1
+        index[tip] = n + 1
 
-        preodr[1] = link
-        preodr[n + 1] = tip
+        memmove(&order[2], &order[1], <size_t>((n - 1) * intsize))
+        order[1] = link
+        order[n + 1] = tip
+
+        # preorder
+        # for i in range(n - 1, 0, -1):
+        #     index[i] += 1
+        #     order[i + 1] = order[i]
+        # order[1] = link
+        # index[link] = 1
+        # order[n + 1] = tip
+        # index[tip] = n + 1
+
+        # preorder
+        # for i in range(1, n):
+        #     order[i + 1] = order[i]
+        # memmove(&order[2], &order[1], <size_t>((n - 1) * intsize))
+        # order[1] = link
+        # order[n + 1] = tip
 
         # entire tree depth + 1
         # if use_depth:
@@ -2631,22 +2651,56 @@ def _insert_taxon(
         #     depths[link] = depth
         #     depths[tip] = depth + 1
         #     for i in range(tag_i, aft_i):
-        #         depths[preodr[i]] += 1
+        #         depths[order[i]] += 1
+
+        # preorder shift: nodes after clade +2, tip inserted after clade, nodes within
+        # clade +1, link inserted before clade
+        for i in range(tag_i, aft_i):
+            index[order[i]] += 1
+        for i in range(aft_i, n):
+            index[order[i]] += 2
+        index[link] = tag_i
+        index[tip] = aft_i + 1
+
+        memmove(&order[aft_i + 2], &order[aft_i], <size_t>(
+            (n - aft_i) * intsize
+        ))
+        order[aft_i + 1] = tip
+        memmove(&order[tag_i + 1], &order[tag_i], <size_t>(
+            (aft_i - tag_i) * intsize
+        ))
+        order[tag_i] = link
+
+        # preorder shift: nodes after clade +2, tip inserted after clade, nodes within
+        # clade +1, link inserted before clade
+        # for i in range(n - 1, aft_i - 1, -1):
+        #     k = order[i]
+        #     index[k] += 2
+        #     order[i + 2] = k
+        # order[aft_i + 1] = tip
+        # index[tip] = aft_i + 1
+
+        # for i in range(aft_i - 1, tag_i - 1, -1):
+        #     k = order[i]
+        #     index[k] += 1
+        #     order[i + 1] = k
+        # order[tag_i] = link
+        # index[link] = tag_i
 
         # preorder shift: nodes after clade +2, tip inserted after clade, nodes within
         # clade +1, link inserted before clade
         # for i in range(aft_i, n):
-        #     preodr[i + 2] = preodr[i]
-        memmove(&preodr[aft_i + 2], &preodr[aft_i], <size_t>(
-            (n - aft_i) * intsize
-        ))
-        preodr[aft_i + 1] = tip
+        #     order[i + 2] = order[i]
+        # memmove(&order[aft_i + 2], &order[aft_i], <size_t>(
+        #     (n - aft_i) * intsize
+        # ))
+        # order[aft_i + 1] = tip
         # for i in range(tag_i, aft_i):
-        #     preodr[i + 1] = preodr[i]
-        memmove(&preodr[tag_i + 1], &preodr[tag_i], <size_t>(
-            (aft_i - tag_i) * intsize
-        ))
-        preodr[tag_i] = link
+        #     order[i + 1] = order[i]
+        # memmove(&order[tag_i + 1], &order[tag_i], <size_t>(
+        #     (aft_i - tag_i) * intsize
+        # ))
+        # order[tag_i] = link
 
         # size +2 from parent to root
         # curr = link

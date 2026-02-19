@@ -607,8 +607,8 @@ def _bme(dm, parallel=500, method=0, factor=16):
     else:
         nest_th = max(3, parallel)  # algorithm starts with 3 taxa
         flat_th = 2 * nest_th * int(np.log(nest_th))  # calculate 2nd threshold
-        nest_th = min(nest_th, parallel)  # cap by target tree size
-        flat_th = min(flat_th, parallel)
+        nest_th = min(nest_th, m)  # cap by target tree size
+        flat_th = min(flat_th, m)
 
     ### Pre-allocate array memory space. ###
 

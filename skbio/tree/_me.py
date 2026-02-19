@@ -692,12 +692,12 @@ def _bme(dm, parallel=500, method=0, factor=16):
         times[k, 0] = perf_counter()
 
         # Calculate balanced average distances from new taxon to existing subtrees.
-        adk_func(n, k, dm, adkl, adku, tree, order)
+        adk_func(n, k, dm, adkl, adku, tree, order, index)
         times[k, 1] = perf_counter()
 
         # Find the branch with minimum length change, into which the new taxon (k) will
         # be inserted.
-        target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order)
+        target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order, index)
         after = target + sizes[order[target]]
         times[k, 2] = perf_counter()
 
@@ -757,10 +757,10 @@ def _bme(dm, parallel=500, method=0, factor=16):
 
     for k in range(nest_th, flat_th):
         times[k, 0] = perf_counter()
-        adk_func(n, k, dm, adkl, adku, tree, order)
+        adk_func(n, k, dm, adkl, adku, tree, order, index)
         times[k, 1] = perf_counter()
 
-        target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order)
+        target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order, index)
         after = target + sizes[order[target]]
         depth = depths[order[target]]
         times[k, 2] = perf_counter()
@@ -826,10 +826,10 @@ def _bme(dm, parallel=500, method=0, factor=16):
 
     for k in range(flat_th, m):
         times[k, 0] = perf_counter()
-        adk_func(n, k, dm, adkl, adku, tree, order)
+        adk_func(n, k, dm, adkl, adku, tree, order, index)
         times[k, 1] = perf_counter()
 
-        target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order)
+        target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order, index)
         after = target + sizes[order[target]]
         depth = depths[order[target]]
         times[k, 2] = perf_counter()

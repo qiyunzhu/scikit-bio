@@ -40,7 +40,7 @@ from ._c_me import (
     _update_size_pair,
     _bal_insert_plan,
     _bal_avgdist_fill,
-    _add_depth,
+    _add_size_depth,
 )
 from ._utils import _validate_dm, _validate_dm_and_tree
 from skbio.stats.distance import DistanceMatrix
@@ -647,6 +647,8 @@ def _bme(dm, parallel=500, method=0, factor=16):
     # pointers to rows in `adm` representing individual ancestors
     ancx = np.empty(N, dtype=int)
 
+    pairs = np.empty(N, dtype=int)  #####
+
     # Pre-calculate negative powers of 2 for quick lookup.
     # NOTE: The maximum number of branches connecting any two nodes (i.e., diameter) is
     # m (when tree is extremely skewed). Therefore m powers are sufficient.
@@ -699,8 +701,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         # Find the branch with minimum length change, into which the new taxon (k) will
         # be inserted.
         target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order, index)
-        tarori = order[target]
-        size = sizes[tarori]
+        size = sizes[target]
         depth = depths[target]
         after = target + size
         times[k, 2] = perf_counter()
@@ -714,6 +715,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
             adku,
             tree,
             order,
+            index,
             sizes,
             depths,
             npots,
@@ -724,7 +726,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         times[k, 4] = perf_counter()
 
         # Update tree topology with the inserted taxon.
-        _add_depth(n, target, after, depth, depths)
+        _add_size_depth(n, target, after, size, depth, sizes, depths, pairs, False)
         _insert_taxon(k, target, after, tree, order, index)
         times[k, 5] = perf_counter()
 
@@ -738,8 +740,8 @@ def _bme(dm, parallel=500, method=0, factor=16):
     goal = threads * factor
 
     # number of ancestor-descendant pairs (i.e., sum of depths) within each clade
-    pairs = np.empty(N, dtype=int)
-    _count_pairs(n, tree, order, sizes, pairs)
+    # pairs = np.empty(N, dtype=int)
+    _count_pairs(n, tree, order, index, sizes, pairs)
 
     # segment bounds (nodes within each segment has the same level)
     segs = np.empty(N + 1, dtype=int)
@@ -766,8 +768,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         times[k, 1] = perf_counter()
 
         target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order, index)
-        tarori = order[target]
-        size = sizes[tarori]
+        size = sizes[target]
         depth = depths[target]
         after = target + size
         times[k, 2] = perf_counter()
@@ -782,6 +783,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
             adku,
             tree,
             order,
+            index,
             sizes,
             pairs,
             depths,
@@ -797,9 +799,9 @@ def _bme(dm, parallel=500, method=0, factor=16):
 
         # Distribute nodes into chunks such that they have roughly even workloads.
         n_chunks = _chunk_nodes(
-            n, goal, target, order, sizes, pairs, chunks, segs, lvls, oops, chusegs
+            n, goal, target, sizes, pairs, chunks, segs, lvls, oops, chusegs
         )
-        _update_size_pair(target, depth, sizes, pairs, ancs)
+        _update_size_pair(target, depth, sizes, pairs, ancs, index)
 
         # Update balanced average distance matrix through parallelization.
         _bal_avgdist_fill(
@@ -823,7 +825,9 @@ def _bme(dm, parallel=500, method=0, factor=16):
             flat=False,
         )
         times[k, 4] = perf_counter()
-        _add_depth(n, target, after, depth, depths)
+        _add_size_depth(
+            n, target, after, size, depth, sizes, depths, pairs, use_pairs=True
+        )
         _insert_taxon(k, target, after, tree, order, index)
         times[k, 5] = perf_counter()
 
@@ -837,8 +841,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
         times[k, 1] = perf_counter()
 
         target = _bal_min_branch(n, lens, adm, adkl, adku, tree, order, index)
-        tarori = order[target]
-        size = sizes[tarori]
+        size = sizes[target]
         depth = depths[target]
         after = target + size
         times[k, 2] = perf_counter()
@@ -853,6 +856,7 @@ def _bme(dm, parallel=500, method=0, factor=16):
             adku,
             tree,
             order,
+            index,
             sizes,
             pairs,
             depths,
@@ -868,9 +872,9 @@ def _bme(dm, parallel=500, method=0, factor=16):
 
         # Distribute nodes into chunks such that they have roughly even workloads.
         n_chunks = _chunk_nodes(
-            n, goal, target, order, sizes, pairs, chunks, segs, lvls, oops, chusegs
+            n, goal, target, sizes, pairs, chunks, segs, lvls, oops, chusegs
         )
-        _update_size_pair(target, depth, sizes, pairs, ancs)
+        _update_size_pair(target, depth, sizes, pairs, ancs, index)
 
         # Update balanced average distance matrix through parallelization.
         _bal_avgdist_fill(
@@ -894,13 +898,14 @@ def _bme(dm, parallel=500, method=0, factor=16):
             flat=True,
         )
         times[k, 4] = perf_counter()
-        _add_depth(n, target, after, depth, depths)
+        _add_size_depth(
+            n, target, after, size, depth, sizes, depths, pairs, use_pairs=True
+        )
         _insert_taxon(k, target, after, tree, order, index)
         times[k, 5] = perf_counter()
 
         n += 2
 
-    # print(n_chunks, pairs[:5])
     print(np.diff(times, axis=1).sum(axis=0).round(3))
 
     # Output intermediate data for diagnosis

@@ -842,15 +842,14 @@ def _bal_min_branch(
     for i in range(1, n):
         node = order[i]
         parent = tree[node, 2]
-        sibling = tree[node, 3]
-        if tree[parent, 0] == node:
-            cell = adm[node, sibling]  # left child
-        else:
-            cell = adm[sibling, node]  # right child
-        length = lens[parent] + (
-            adm[parent, sibling] + adkl[node] - cell - adku[parent]
+        lens[node] = length = lens[parent] + (
+            adm[parent, tree[node, 3]]  # parent-sibling
+            + adkl[node]
+            - adm[tree[parent, 0], tree[parent, 1]]  # node-sibling
+            - adku[parent]
         )
-        lens[node] = length
+        # NOTE: In the above code, `node` and `sibling` are looked up again to
+        # make the calculation branchless.
         if length < min_len:
             min_len, min_i = length, i
 

@@ -26,7 +26,6 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm, chi2, f, t
 from scipy.optimize import minimize
-from patsy import dmatrix
 
 from skbio.util import get_rng
 from skbio.table._tabular import _ingest_table, _aggregate_features
@@ -3481,7 +3480,6 @@ def struc_zero(table, metadata, grouping, neg_lb=False):
     # Validate feature table and metadata
     matrix, samples, features = _ingest_table(table)
     metadata = _check_metadata(metadata, matrix, samples)
-    metadata = _type_cast_to_float(metadata)
 
     unique_groups, group_indices, group_counts = np.unique(
         metadata[grouping], return_inverse=True, return_counts=True

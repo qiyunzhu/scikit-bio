@@ -1378,7 +1378,6 @@ class Ancombc2Tests(TestCase):
             table.shape[1],
         )
 
-
     def test_ancombc2_pseq_sub(self):
         wkdir = '/home/drz/Dropbox/scikit-bio/ancombc/pseq_sub/py_out'
 
@@ -1633,36 +1632,42 @@ class PostHocTests(TestCase):
     #     npt.assert_array_equal(obs, exp)
 
 
-# class StrucZeroTests(TestCase):
+class StrucZeroTests(TestCase):
+    def test_struc_zero(self):
+        samples = [f'S{i}' for i in range(1, 7)]
+        features = [f'F{i}' for i in range(1, 8)]
+        data = np.array(
+            [[ 2,  1,  4,  7,  0,  0,  1],
+             [ 1,  0,  0,  6,  5,  0, 10],
+             [ 3,  2,  2,  9,  6,  0,  1],
+             [ 0, 12,  1,  0,  0,  3,  2],
+             [ 2,  8, 27,  0,  0,  7,  3],
+             [10,  9,  0,  0,  4,  4,  3]])
+        table = pd.DataFrame(data, index=samples, columns=features)
+        grouping = ["well"] * 3 + ["sick"] * 3
+        meta = pd.Series(grouping, index=samples, name="status").to_frame()
+        obs = struc_zero(table, meta, "status")
+        exp = pd.DataFrame(np.array(
+            [[0, 0, 0, 1, 0, 0, 0],
+             [0, 0, 0, 0, 0, 1, 0]], dtype=bool).T,
+            index=features, columns=["sick", "well"])  # sorted alphabetically
+        pdt.assert_frame_equal(obs, exp)
 
-#     def test_struc_zero(self):
-#         # This test returns all False results (i.e., none of the features have
-#         # structural zeros). Please see the doctest for an example that generates both
-#         # False and True results. Also, the original (un-subsampled) HITChip Atlas
-#         # dataset should produce some True results.
-#         table = pd.read_csv(
-#             get_data_path("raw/pseq_feature_table_subset.csv.gz"), index_col=0
-#         )
-#         features = table.columns
+    def test_struc_zero_pseq_sub(self):
+        table = pd.read_csv(get_data_path("pseq_sub_feature_table.csv"), index_col=0)
+        meta = pd.read_csv(get_data_path("pseq_sub_meta_data.csv"), index_col=0)
+        cats = ["lean", "overweight", "obese"]
+        meta["bmi"] = pd.Categorical(meta["bmi"], categories=cats)
 
-#         meta_data = pd.read_csv(
-#             get_data_path("raw/pseq_meta_data_subset.csv.gz"), index_col=0
-#         )
-#         meta_data = meta_data.dropna(axis=1, how="any")
-#         categories = ["obese", "overweight", "lean"]
-#         meta_data["bmi"] = pd.Categorical(
-#             meta_data["bmi"], categories=["obese", "overweight", "lean"]
-#         )
+        # Groups are sorted alphabetically in the result.
+        exp = pd.DataFrame(False, index=table.columns, columns=sorted(cats))
+        obs = struc_zero(table, meta, "bmi")
+        pdt.assert_frame_equal(obs, exp)
 
-#         obs = struc_zero(table, meta_data, "bmi", neg_lb=False)
-#         exp = np.zeros((len(features), len(categories)), dtype=bool)
-
-#         # note: groups are sorted alphabetically
-#         exp = pd.DataFrame(exp, index=features, columns=["lean", "obese", "overweight"])
-#         pdt.assert_frame_equal(obs, exp)
-
-#         obs = struc_zero(table, meta_data, "bmi", neg_lb=True)
-#         pdt.assert_frame_equal(obs, exp)
+        # Use negative lower bound to detect structural zeros in the "overweight" group.
+        exp.loc["Cyanobacteria", "overweight"] = True
+        obs = struc_zero(table, meta, "bmi", neg_lb=True)
+        pdt.assert_frame_equal(obs, exp)
 
 
 if __name__ == "__main__":

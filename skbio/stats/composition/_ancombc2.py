@@ -288,15 +288,16 @@ def ancombc(
     >>> from skbio.stats.composition import struc_zero
     >>> res_zero = struc_zero(table, metadata, 'status')
     >>> res_zero
-         mild  moderate  severe
-    F1  False     False   False
-    F2  False     False   False
-    F3  False     False   False
-    F4  False     False   False
-    F5  False     False    True
-    F6  False     False   False
-    F7  False     False   False
-    F8  False     False   False
+                mild  moderate  severe
+    FeatureID
+    F1         False     False   False
+    F2         False     False   False
+    F3         False     False   False
+    F4         False     False   False
+    F5         False     False    True
+    F6         False     False   False
+    F7         False     False   False
+    F8         False     False   False
 
     The result reveals that feature "F5" is a structural zero in the "severe" groups,
     as all or most of its values are zero. Although the ANCOM-BC test itself didn't

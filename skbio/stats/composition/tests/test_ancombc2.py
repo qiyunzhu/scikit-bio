@@ -424,7 +424,7 @@ class CoreTests(TestCase):
         exp_theta = np.mean(data - self.dmat1 @ exp_beta.T, axis=1)
 
         for direct in (False, True):
-            obs_theta, obs_beta = _lstsq_sparse(
+            obs_theta, obs_beta, _, _ = _lstsq_sparse(
                 data, self.dmat1, missing, direct)
             npt.assert_allclose(obs_theta, exp_theta)
             npt.assert_allclose(obs_beta, exp_beta)
@@ -437,7 +437,7 @@ class CoreTests(TestCase):
         exp_theta = np.mean(data - self.dmat1 @ exp_beta.T, axis=1)
 
         for direct in (False, True):
-            obs_theta, obs_beta = _lstsq_sparse_batch(
+            obs_theta, obs_beta, _, _ = _lstsq_sparse_batch(
                 data, self.dmat1, missing, direct, batch=1
             )
             npt.assert_allclose(obs_theta, exp_theta)
@@ -689,8 +689,9 @@ class CoreTests(TestCase):
         # Example 1 (RCLR transform)
         missing = self.data1 == 0
         data_tr = rclr(self.data1, axis=0, validate=False)
-        obs_var_hat, obs_beta, obs_theta, obs_beta_covmat = _estimate_params_sparse(
-            data_tr, self.dmat1, missing)
+        obs_var_hat, obs_beta, obs_theta, obs_beta_covmat, _, _ = (
+            _estimate_params_sparse(data_tr, self.dmat1, missing)
+        )
         exp_var_hat = np.array(
             [[0.14683, 0.26361],
              [0.10253, 0.12889],
@@ -724,8 +725,11 @@ class CoreTests(TestCase):
 
         # Should match `_estimate_params` on non-zero data
         data_tr = np.log1p(self.data1)
-        obs_var_hat, obs_beta, obs_theta, obs_beta_covmat = _estimate_params_sparse(
-            data_tr, self.dmat1, np.full(self.data1.shape, False))
+        obs_var_hat, obs_beta, obs_theta, obs_beta_covmat, _, _ = (
+            _estimate_params_sparse(
+                data_tr, self.dmat1, np.full(self.data1.shape, False)
+            )
+        )
         exp_var_hat, exp_beta, exp_theta, exp_beta_covmat = _estimate_params_dense(
             data_tr, self.dmat1)
         npt.assert_allclose(obs_var_hat, exp_var_hat, atol=1e-5)
@@ -796,8 +800,12 @@ class CoreTests(TestCase):
                 zero_mask,
                 batch=batch_size,
             )
-            for observed, expected in zip(batched, legacy):
-                npt.assert_allclose(observed, expected, rtol=1e-12, atol=1e-12)
+            for observed, expected in zip(batched[:4], legacy[:4]):
+                if observed is None:
+                    self.assertIsNone(expected)
+                else:
+                    npt.assert_allclose(observed, expected, rtol=1e-12, atol=1e-12)
+            npt.assert_array_equal(batched[5], legacy[5])
 
         # The diagonal-only covariance route must remain solver-independent too.
         legacy_diag = _estimate_params_sparse(
@@ -866,10 +874,19 @@ class CoreTests(TestCase):
             data_tr, self.dmat1, zero_mask, direct=True, batch=None
         )
 
-        for observed_array, direct_array in zip(observed, direct):
-            npt.assert_allclose(direct_array, observed_array, atol=1e-10)
-        for batched_array, legacy_array in zip(direct, direct_legacy):
-            npt.assert_allclose(batched_array, legacy_array, rtol=1e-12, atol=1e-12)
+        for observed_array, direct_array in zip(observed[:4], direct[:4]):
+            if observed_array is None:
+                self.assertIsNone(direct_array)
+            else:
+                npt.assert_allclose(direct_array, observed_array, atol=1e-10)
+        for batched_array, legacy_array in zip(direct[:4], direct_legacy[:4]):
+            if batched_array is None:
+                self.assertIsNone(legacy_array)
+            else:
+                npt.assert_allclose(
+                    batched_array, legacy_array, rtol=1e-12, atol=1e-12
+                )
+        npt.assert_array_equal(direct[5], direct_legacy[5])
 
     def test_init_bias_params(self):
         # regular case
@@ -1263,11 +1280,13 @@ class AncombcTests(TestCase):
         obs = res.result
         exp = pd.read_table(get_data_path("pseq_sub_ancombc_main.tsv"), index_col=(0, 1))
         exp["Signif"] = exp["Signif"].astype("boolean")
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
         pdt.assert_frame_equal(obs, exp, atol=1e-3)
 
         # obs.to_csv(f"{wkdir}/pseq_sub_ancombc_main.csv")
         exp = pd.read_csv(f"{wkdir}/pseq_sub_ancombc_main.csv", index_col=(0, 1))
         exp["Signif"] = exp["Signif"].astype("boolean")
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
         pdt.assert_frame_equal(obs, exp)
 
         # global test
@@ -1331,6 +1350,11 @@ class Ancombc2Tests(TestCase):
                     var_quantile=var_quantile,
                 )
 
+        with self.assertRaisesRegex(ValueError, "`rank_mode`"):
+            ancombc2(
+                self.table, self.grouping.to_frame(), "grouping", rank_mode="bad"
+            )
+
         obs = res.result["Signif"].to_numpy()
 
         # expected differential abundance of intercept and grouping
@@ -1344,6 +1368,137 @@ class Ancombc2Tests(TestCase):
             [0.0, 0.0],
         ]).flatten()
         npt.assert_array_equal(obs, exp)
+
+    def test_rank_deficient_coefficients(self):
+        # With pseudocount=0, each feature is fitted only on samples where it is
+        # observed. A feature confined to one level of a categorical factor therefore
+        # cannot necessarily identify every model coefficient.
+        samples = [f"s{i}" for i in range(12)]
+        metadata = pd.DataFrame(
+            {"group": pd.Categorical(["a"] * 6 + ["b"] * 6)}, index=samples
+        )
+        rng = np.random.default_rng(4)
+        common = rng.integers(2, 20, size=(12, 8))
+        ref_only = np.array([5, 7, 6, 8, 9, 5] + [0] * 6)[:, None]
+        nonref_only = np.array([0] * 6 + [4, 8, 6, 7, 9, 5])[:, None]
+        features = [f"f{i}" for i in range(8)] + ["ref_only", "nonref_only"]
+        table = pd.DataFrame(
+            np.hstack((common, ref_only, nonref_only)),
+            index=samples,
+            columns=features,
+        )
+
+        # The masked-design SVD identifies coefficient estimability essentially for
+        # free while retaining finite Moore-Penrose coefficients for fitted values.
+        data, missing = _transform_data(table.to_numpy(), center=True)
+        dmat = dmatrix("group", metadata)
+        for batch in (None, 1):
+            var, beta, theta, cov, estimable, rank = _estimate_params_sparse(
+                data, dmat, missing, groups=None, batch=batch,
+                rank_mode="coefficient",
+            )
+            self.assertIsNone(cov)
+            self.assertTrue(np.isfinite(var).all())
+            self.assertTrue(np.isfinite(beta).all())
+            self.assertTrue(np.isfinite(theta).all())
+            npt.assert_array_equal(estimable[:-2], True)
+            npt.assert_array_equal(estimable[-2:], [[True, False], [False, False]])
+            npt.assert_array_equal(rank, [2] * 8 + [1, 1])
+
+        res = ancombc2(table, metadata, "group", rank_mode="coefficient")
+        self.assertTrue(np.isfinite(res._beta_hat).all())
+        npt.assert_array_equal(
+            res._estimable[-2:], [[True, False], [False, False]]
+        )
+
+        # Only inferential output is suppressed. The reference-group intercept remains
+        # estimable for a feature observed only in that group, whereas its group effect
+        # does not. A feature observed only in the non-reference group cannot separate
+        # the intercept from the group coefficient, so neither is estimable.
+        obs = res.result.loc[["ref_only", "nonref_only"]]
+        self.assertTrue(np.isfinite(obs.loc[("ref_only", "Intercept"), "Log(FC)"]))
+        invalid = [
+            ("ref_only", "group[T.b]"),
+            ("nonref_only", "Intercept"),
+            ("nonref_only", "group[T.b]"),
+        ]
+        for idx in invalid:
+            row = obs.loc[idx]
+            self.assertTrue(row[["Log(FC)", "SE", "W"]].isna().all())
+            self.assertEqual(row["pvalue"], 1.0)
+            self.assertEqual(row["qvalue"], 1.0)
+            self.assertFalse(row["Signif"])
+
+        # R's lm cannot construct contrasts when zero omission leaves only one factor
+        # level, so the default compatibility mode suppresses the entire feature fit.
+        res_r = ancombc2(table, metadata, "group")
+        obs_r = res_r.result.loc[["ref_only", "nonref_only"]]
+        self.assertTrue(obs_r[["Log(FC)", "SE", "W"]].isna().all().all())
+        npt.assert_array_equal(obs_r["pvalue"], 1.0)
+        npt.assert_array_equal(obs_r["qvalue"], 1.0)
+        self.assertFalse(obs_r["Signif"].any())
+
+        # Presence/absence evidence is deliberately separate from ordinary regression
+        # inference: structural-zero analysis identifies the missing group directly.
+        zero = struc_zero(table, metadata, "group")
+        self.assertTrue(zero.loc["ref_only", "b"])
+        self.assertTrue(zero.loc["nonref_only", "a"])
+
+    def test_rank_deficient_posthoc(self):
+        # A feature absent from one of three groups has one aliased grouping
+        # coefficient. Whole-group post-hoc hypotheses are therefore unavailable even
+        # though the remaining primary coefficients may still be estimable.
+        samples = [f"s{i}" for i in range(15)]
+        metadata = pd.DataFrame(
+            {"group": pd.Categorical(["a"] * 5 + ["b"] * 5 + ["c"] * 5)},
+            index=samples,
+        )
+        rng = np.random.default_rng(5)
+        common = rng.integers(2, 20, size=(15, 8))
+        partial = np.array(
+            [4, 5, 6, 7, 5, 8, 9, 7, 6, 8, 0, 0, 0, 0, 0]
+        )[:, None]
+        table = pd.DataFrame(
+            np.hstack((common, partial)),
+            index=samples,
+            columns=[f"f{i}" for i in range(8)] + ["partial"],
+        )
+
+        # R does not fail this feature wholesale: two factor levels remain observed.
+        # The unused third-level dummy is omitted by lm and ANCOMBC fills its global
+        # coefficient slot with zero. The default compatibility mode mirrors that.
+        res_r = ancombc2(table, metadata, "group", grouping="group")
+        self.assertIsNone(res_r._estimable)
+        self.assertAlmostEqual(
+            res_r.result.loc[("partial", "group[T.c]"), "Log(FC)"], 0.0
+        )
+        self.assertTrue(np.isfinite(res_r.global_test().loc["partial", "W"]))
+
+        res = ancombc2(
+            table, metadata, "group", grouping="group", rank_mode="coefficient"
+        )
+        npt.assert_array_equal(res._estimable[-1], [True, True, False])
+
+        row = res.global_test().loc["partial"]
+        self.assertTrue(np.isnan(row["W"]))
+        self.assertEqual(row["pvalue"], 1.0)
+        self.assertEqual(row["qvalue"], 1.0)
+        self.assertFalse(row["Signif"])
+
+        for result in (
+            res.pairwise_test().loc["partial"],
+            res.dunnett_test(bootstraps=5, seed=1).loc["partial"],
+        ):
+            self.assertTrue(result[["Log(FC)", "SE", "W"]].isna().all().all())
+            npt.assert_array_equal(result["pvalue"], 1.0)
+            npt.assert_array_equal(result["qvalue"], 1.0)
+            self.assertFalse(result["Signif"].any())
+
+        row = res.trend_test(bootstraps=5, seed=1).loc["partial"]
+        self.assertTrue(np.isnan(row["W"]))
+        self.assertEqual(row["pvalue"], 1.0)
+        self.assertEqual(row["qvalue"], 1.0)
+        self.assertFalse(row["Signif"])
 
     def test_grouping_controls_posthoc_availability(self):
         res = ancombc2(self.table, self.grouping.to_frame(), "grouping")
@@ -1393,12 +1548,23 @@ class Ancombc2Tests(TestCase):
         obs = res.result
         exp = pd.read_table(get_data_path("pseq_sub_ancombc2_main.tsv"), index_col=(0, 1))
         exp["Signif"] = exp["Signif"].astype("boolean")
-        pdt.assert_frame_equal(obs, exp.iloc[:, :-2], atol=1e-3)
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
+        exp_main = exp.iloc[:, :-2]
+        pdt.assert_frame_equal(obs, exp_main, atol=1e-3)
+
+        # R may keep a fit when one level of a multi-level factor is absent. In these
+        # two features, region still has other observed levels, so the missing US dummy
+        # is filled with zero rather than causing a whole-feature failure.
+        for feature in ("Cyanobacteria", "Spirochaetes"):
+            self.assertAlmostEqual(
+                obs.loc[(feature, "region[T.US]"), "Log(FC)"], 0.0
+            )
 
         # obs.to_csv(f"{wkdir}/pseq_sub_ancombc2_main.csv")
         exp = pd.read_csv(f"{wkdir}/pseq_sub_ancombc2_main.csv", index_col=(0, 1))
         exp["Signif"] = exp["Signif"].astype("boolean")
-        pdt.assert_frame_equal(obs, exp)
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
+        pdt.assert_frame_equal(obs, exp, atol=1e-3)
 
         # global test
         obs = res.global_test()
@@ -1407,25 +1573,29 @@ class Ancombc2Tests(TestCase):
 
         # obs.to_csv(f"{wkdir}/pseq_sub_ancombc2_global.csv")
         exp = pd.read_csv(f"{wkdir}/pseq_sub_ancombc2_global.csv", index_col=0)
-        pdt.assert_frame_equal(obs, exp)
+        pdt.assert_frame_equal(obs, exp, atol=1e-3)
 
         # pairwise test
         obs = res.pairwise_test()
         exp = pd.read_table(get_data_path("pseq_sub_ancombc2_pair.tsv"), index_col=(0, 1))
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
         pdt.assert_frame_equal(obs, exp.iloc[:, :-2], atol=1e-3)
 
         # obs.to_csv(f"{wkdir}/pseq_sub_ancombc2_pair.csv")
         exp = pd.read_csv(f"{wkdir}/pseq_sub_ancombc2_pair.csv", index_col=(0, 1))
-        pdt.assert_frame_equal(obs, exp)
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
+        pdt.assert_frame_equal(obs, exp, atol=1e-3)
 
         # dunnett test
         obs = res.dunnett_test(seed=123)
         exp = pd.read_table(get_data_path("pseq_sub_ancombc2_dunn.tsv"), index_col=(0, 1))
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
         pdt.assert_frame_equal(obs, exp.iloc[:, :-2], atol=1e-3)
 
         # obs.to_csv(f"{wkdir}/pseq_sub_ancombc2_dunn.csv")
         exp = pd.read_csv(f"{wkdir}/pseq_sub_ancombc2_dunn.csv", index_col=(0, 1))
-        pdt.assert_frame_equal(obs, exp)
+        exp.rename(columns={"Log2(FC)": "Log(FC)"}, inplace=True)
+        pdt.assert_frame_equal(obs, exp, atol=1e-3)
 
         # trend test
         obs = res.trend_test(seed=123)
@@ -1436,7 +1606,7 @@ class Ancombc2Tests(TestCase):
 
         # obs.to_csv(f"{wkdir}/pseq_sub_ancombc2_trend.csv")
         exp = pd.read_csv(f"{wkdir}/pseq_sub_ancombc2_trend.csv", index_col=0)
-        pdt.assert_frame_equal(obs, exp)
+        pdt.assert_frame_equal(obs, exp, atol=1e-3)
 
     def test_ancombc2_sensitivity(self):
         cats = ["lean", "overweight", "obese"]

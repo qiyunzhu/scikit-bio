@@ -409,10 +409,12 @@ def ancombc2(
     rank_mode : {"r", "coefficient"}, optional
         How to handle rank-deficient feature-specific regressions when zero counts are
         treated as missing. ``"r"`` (default) reproduces R ANCOMBC2's whole-fit
-        failure when zero omission leaves a categorical predictor with only one
-        observed level. ``"coefficient"`` instead keeps the Moore-Penrose fit and
-        suppresses only coefficients that are not uniquely estimable. This option has
-        no effect when a positive pseudocount is used.
+        failure when a categorical predictor is reduced to one observed level. For
+        ordinary additive treatment-coded factors, it also uses the first remaining
+        Patsy level as a feature-local reference when the global reference is absent.
+        ``"coefficient"`` instead keeps the Moore-Penrose fit and suppresses only
+        coefficients that are not uniquely estimable. This option has no effect when
+        a positive pseudocount is used.
     max_iter : int, optional
         Maximum number of iterations for the bias estimation process. Default is 100.
     tol : float, optional
@@ -439,10 +441,14 @@ def ancombc2(
     fits. By default, scikit-bio mirrors R ANCOMBC2 when this omission leaves a
     categorical predictor with only one observed level: the entire feature fit is
     unavailable, with ``Log(FC)``, ``SE`` and ``W`` reported as NaN,
-    ``pvalue=qvalue=1``, and ``Signif=False``. ``rank_mode="coefficient"`` instead
-    retains the Moore-Penrose fit and suppresses only coefficients that are not uniquely
-    estimable. Use :func:`struc_zero` when group-specific absence itself is of
-    scientific interest.
+    ``pvalue=qvalue=1``, and ``Signif=False``. If an ordinary additive
+    treatment-coded factor retains multiple levels but loses its global reference, the
+    first remaining level in Patsy's category order is used as a feature-local
+    reference before bias estimation. This reference rebasing is intentionally not
+    applied to interactions or custom contrasts, whose coefficient bases require a
+    joint transformation. ``rank_mode="coefficient"`` retains the Moore-Penrose fit
+    instead and suppresses only coefficients that are not uniquely estimable. Use
+    :func:`struc_zero` when group-specific absence itself is of scientific interest.
 
     See Also
     --------
@@ -501,7 +507,7 @@ def ancombc2(
     ``ANCOMBCResult`` behaves like its primary result table for display and column
     selection. Here we display only significant feature-covariate pairs:
 
-    >>> res[res["Signif"]].round(3)  # doctest: +NORMALIZE_WHITESPACE
+    >>> res[res["Signif"]].round(3)
                                   Log(FC)     SE      W  pvalue  qvalue  Signif
     FeatureID Covariate
     F2        status[T.moderate]    1.578  0.287  5.503   0.000   0.001    True
@@ -519,7 +525,7 @@ def ancombc2(
     status groups, without identifying which groups differ.
 
     >>> res_global = res.global_test()
-    >>> res_global.round(3)  # doctest: +NORMALIZE_WHITESPACE
+    >>> res_global.round(3)
                     W  pvalue  qvalue  Signif
     FeatureID
     F1          1.786   0.457   1.000   False
@@ -568,7 +574,7 @@ def ancombc2(
     comparison. A seed is supplied because the procedure uses bootstrapping.
 
     >>> res_dunn = res.dunnett_test(seed=42)
-    >>> res_dunn[res_dunn["Signif"]].round(3)  # doctest: +NORMALIZE_WHITESPACE
+    >>> res_dunn[res_dunn["Signif"]].round(3)
                                   Log(FC)     SE      W  pvalue  qvalue  Signif
     FeatureID Comparison
     F2        status[T.moderate]    1.578  0.287  5.503   0.000   0.001    True
@@ -582,7 +588,7 @@ def ancombc2(
     matches the factor level order used by the fitted model.
 
     >>> res_trend = res.trend_test(seed=42)
-    >>> res_trend.round(3)  # doctest: +NORMALIZE_WHITESPACE
+    >>> res_trend.round(3)
                    W  pvalue  qvalue  Signif
     FeatureID
     F1         0.513    0.28    1.00   False
@@ -1226,7 +1232,7 @@ def _lstsq_sparse(
         # impossible (most importantly, a categorical predictor collapses to one
         # observed level). Mere matrix rank deficiency does not necessarily fail an R
         # fit: lm may drop a dummy coefficient and ANCOMBC fills that slot with zero.
-        fit_valid = _r_fit_valid(dmat, missing)
+        fit_valid, rebases = _r_fit_info(dmat, missing)
         estimable = (
             None
             if fit_valid is None
@@ -1234,6 +1240,7 @@ def _lstsq_sparse(
         )
     else:
         fit_valid = None
+        rebases = ()
         estimable = _coef_estimable(Vh, S_inv)
     V = np.swapaxes(Vh, -1, -2)
     dmat_inv = np.einsum("fpk,fk,fsk->fps", V, S_inv, U, optimize=True)
@@ -1266,6 +1273,15 @@ def _lstsq_sparse(
         theta, beta = _solve_sparse_iter(
             data, dmat, missing, beta, resp, func, tol, max_iter, fit_valid
         )
+
+    # When zero omission removes Patsy's reference level but leaves two or more
+    # levels, R refits the factor with the first remaining level as the local
+    # reference and ANCOMBC maps that coefficient vector back into the global
+    # slots. Re-express the Moore-Penrose solution the same way. This changes
+    # coefficients used by bias estimation but preserves fitted values for every
+    # observed response, so it need only be done once after the theta iteration.
+    if rebases:
+        _r_rebase_categorical(beta, rebases, fit_valid)
 
     return theta, beta, estimable, rank
 
@@ -1373,11 +1389,12 @@ def _lstsq_sparse_batch(
         # Determine actual R-style fit failures separately from numerical rank. A
         # missing dummy level can make the masked global design rank-deficient while
         # stats::lm still succeeds after dropping that unused factor level.
-        fit_valid = _r_fit_valid(dmat, missing)
+        fit_valid, rebases = _r_fit_info(dmat, missing)
         if fit_valid is not None:
             estimable = np.broadcast_to(fit_valid[:, None], (n_feats, n_covars))
     else:
         fit_valid = None
+        rebases = ()
 
     # Preserve the input precision for the response and compact-operator workspaces.
     resp = data.copy()
@@ -1415,6 +1432,12 @@ def _lstsq_sparse_batch(
         theta, beta = _solve_sparse_iter(
             data, dmat, missing, beta, resp, func, tol, max_iter, fit_valid
         )
+
+    # See the non-batched route above. The reparameterization is feature-local and
+    # preserves observed fitted values; it is needed before EM because ANCOMBC's
+    # bias correction operates on the mapped coefficient slots themselves.
+    if rebases:
+        _r_rebase_categorical(beta, rebases, fit_valid)
 
     return theta, beta, estimable, rank
 
@@ -1716,40 +1739,51 @@ def _lstsq_dense(dmat, gram=False):
     return dmat_inv, gram_sum
 
 
-def _r_fit_valid(dmat, missing):
-    """Identify feature fits that would fail R ``lm`` after zero omission.
+def _r_fit_info(dmat, missing):
+    """Identify R-style failed fits and feature-local categorical references.
 
-    R rebuilds each feature's model frame after omitting zero-derived ``NA`` responses.
-    A categorical predictor with fewer than two observed levels then causes ``lm`` to
-    fail at contrast construction, and ANCOMBC replaces the entire fit by ``NA``. A
-    merely absent level among three or more observed levels does *not* fail the fit; R
-    drops that level and ANCOMBC later fills its missing global coefficient slot by
-    zero.
+    R rebuilds each feature's model frame after omitting zero-derived ``NA``
+    responses. A categorical predictor with fewer than two observed levels makes
+    ``lm`` fail at contrast construction. If two or more levels remain but the
+    original reference level is absent, treatment coding instead chooses the first
+    remaining level as a feature-local reference. ANCOMBC maps that local coefficient
+    vector back into the global coefficient slots, filling omitted slots with zero.
 
-    We recover categorical level membership from Patsy's standalone factor term in the
-    already-built design matrix. This adds only level-wise boolean reductions and no
-    feature-by-sample workspace. If no categorical main-effect term is available, no
-    whole-fit failure is inferred here; coefficient-level numerical rank remains
-    available separately through the SVD.
+    This helper reproduces those two behaviors for categorical *main effects* encoded
+    by Patsy's ordinary reduced-rank treatment contrast. Multiple additive categorical
+    terms are supported. Factors that participate in interactions are still checked
+    for whole-fit failure, but are intentionally not rebased here: changing a
+    reference level also changes the associated interaction basis, which cannot be
+    represented by a safe main-effect-only column operation.
 
-    Returns ``None`` when all fits are valid, which is the fast-path sentinel used by
-    the iterative solver.
+    Returns
+    -------
+    valid : ndarray of bool or None
+        Feature-level fit validity. ``None`` is the all-valid fast-path sentinel.
+    rebases : tuple
+        Compact instructions consumed by :func:`_r_rebase_categorical`.
     """
     info = getattr(dmat, "design_info", None)
     if info is None:
-        return None
+        return None, ()
 
-    n_feats = missing.shape[1]
+    n_samps, n_feats = missing.shape
     # lm also fails when zero omission leaves no response at all.
-    valid = np.sum(missing, axis=0) < missing.shape[0]
+    valid = np.sum(missing, axis=0) < n_samps
     checked = not np.all(valid)
+    rebases = []
+
+    try:
+        intercept = info.column_names.index("Intercept")
+    except ValueError:
+        intercept = None
 
     for factor, factor_info in info.factor_infos.items():
         if factor_info.type != "categorical":
             continue
 
-        # With ordinary formulas (including ``a * b``), categorical factors have a
-        # standalone main-effect term. Its contrast rows uniquely encode factor levels.
+        # Ordinary hierarchical formulas (including ``a * b``) contain a standalone
+        # main-effect term whose contrast rows identify the factor levels.
         term = next(
             (t for t in info.terms if len(t.factors) == 1 and t.factors[0] == factor),
             None,
@@ -1759,32 +1793,163 @@ def _r_fit_valid(dmat, missing):
 
         sl = info.term_slices[term]
         codes = np.asarray(dmat[:, sl])
-        _, level = np.unique(codes, axis=0, return_inverse=True)
-        n_levels = int(level.max()) + 1
-        if n_levels < 2:
-            # The global design should already reject this case, but leave the check
-            # harmless and explicit.
-            valid[:] = False
-            checked = True
-            break
+        codings = info.term_codings.get(term, ())
+        contrast = None
+        if len(codings) == 1:
+            contrast_obj = codings[0].contrast_matrices.get(factor)
+            if contrast_obj is not None:
+                contrast = np.asarray(contrast_obj.matrix)
 
-        observed_levels = np.zeros(n_feats, dtype=np.intp)
-        level_missing = np.empty(n_feats, dtype=np.intp)
-        for i in range(n_levels):
-            rows = level == i
-            # A level is represented for a feature if at least one sample from that
-            # level has an observed (nonzero) response. ``where`` avoids materializing
-            # either a complemented or a row-subset feature-by-sample mask.
-            np.sum(
-                missing, axis=0, where=rows[:, None], dtype=np.intp, out=level_missing
+        # Prefer Patsy's contrast matrix because it preserves category order and tells
+        # us which row is the reference. Fall back to unique design rows when a custom
+        # coding cannot be interpreted; the fallback is enough for fit-failure
+        # detection but deliberately does not attempt reference rebasing.
+        standard_treatment = False
+        if (
+            contrast is not None
+            and contrast.shape[1] == sl.stop - sl.start
+            and contrast.shape[0] == len(factor_info.categories)
+            and contrast.shape[1] == contrast.shape[0] - 1
+        ):
+            zero_rows = np.flatnonzero(np.all(contrast == 0, axis=1))
+            nonzero = (
+                np.delete(contrast, zero_rows, axis=0) if zero_rows.size == 1 else None
             )
-            observed_levels += level_missing < rows.sum()
-        valid &= observed_levels >= 2
-        checked = True
+            standard_treatment = (
+                zero_rows.size == 1
+                and nonzero is not None
+                and np.all((nonzero == 0) | (nonzero == 1))
+                and np.all(np.sum(nonzero, axis=1) == 1)
+                and np.array_equal(
+                    np.sort(np.argmax(nonzero, axis=1)),
+                    np.arange(contrast.shape[1]),
+                )
+            )
 
-    if not checked or np.all(valid):
-        return None
-    return valid
+        if standard_treatment:
+            ref_level = int(zero_rows[0])
+            # Map each factor level to its main-effect design column (-1 for reference).
+            level_col = np.full(contrast.shape[0], -1, dtype=np.intp)
+            for level_idx in range(contrast.shape[0]):
+                if level_idx != ref_level:
+                    level_col[level_idx] = int(np.argmax(contrast[level_idx]))
+
+            present = np.zeros((n_feats, contrast.shape[0]), dtype=bool)
+            level_missing = np.empty(n_feats, dtype=np.intp)
+            for level_idx, col in enumerate(level_col):
+                if col < 0:
+                    rows = np.all(codes == 0, axis=1)
+                else:
+                    rows = codes[:, col] == 1
+                np.sum(
+                    missing,
+                    axis=0,
+                    where=rows[:, None],
+                    dtype=np.intp,
+                    out=level_missing,
+                )
+                present[:, level_idx] = level_missing < rows.sum()
+
+            valid &= np.sum(present, axis=1) >= 2
+            checked = True
+
+            # With an intercept and a treatment-coded additive main effect, changing
+            # the reference is a cheap null-space reparameterization. Do not apply it
+            # to factors used in interactions: their interaction columns must be
+            # transformed together, and silently changing only the main effect would
+            # alter fitted values.
+            in_interaction = any(
+                factor in t.factors and len(t.factors) > 1 for t in info.terms
+            )
+            if intercept is not None and not in_interaction:
+                needs = ~present[:, ref_level]
+                if np.any(needs):
+                    local_ref = np.full(n_feats, -1, dtype=np.intp)
+                    # Patsy orders the categories in ``factor_info.categories``; after
+                    # dropping the missing global reference, the first remaining level
+                    # becomes the local treatment reference.
+                    for level_idx, col in enumerate(level_col):
+                        if level_idx == ref_level:
+                            continue
+                        choose = needs & (local_ref < 0) & present[:, level_idx]
+                        local_ref[choose] = col
+                    rows = np.flatnonzero(local_ref >= 0)
+                    if rows.size:
+                        # Keep presence only for the affected rows and non-reference
+                        # dummy columns. This is tiny compared with the SVD workspaces.
+                        dummy_present = np.empty((rows.size, sl.stop - sl.start), bool)
+                        for level_idx, col in enumerate(level_col):
+                            if col >= 0:
+                                dummy_present[:, col] = present[rows, level_idx]
+                        rebases.append(
+                            (
+                                intercept,
+                                sl.start,
+                                sl.stop,
+                                rows,
+                                local_ref[rows].copy(),
+                                dummy_present,
+                            )
+                        )
+        else:
+            # Custom/full-rank contrast: retain the previous conservative failure
+            # check based on distinct factor-code rows, but do not guess how Patsy
+            # should reparameterize its coefficients.
+            _, level = np.unique(codes, axis=0, return_inverse=True)
+            n_levels = int(level.max()) + 1
+            if n_levels < 2:
+                valid[:] = False
+                checked = True
+                break
+            observed_levels = np.zeros(n_feats, dtype=np.intp)
+            level_missing = np.empty(n_feats, dtype=np.intp)
+            for i in range(n_levels):
+                rows = level == i
+                np.sum(
+                    missing,
+                    axis=0,
+                    where=rows[:, None],
+                    dtype=np.intp,
+                    out=level_missing,
+                )
+                observed_levels += level_missing < rows.sum()
+            valid &= observed_levels >= 2
+            checked = True
+
+    valid_out = None if not checked or np.all(valid) else valid
+    return valid_out, tuple(rebases)
+
+
+def _r_rebase_categorical(beta, rebases, valid=None):
+    """Map treatment-coded sparse fits to feature-local reference levels in place.
+
+    The Moore-Penrose solution and R's local treatment-coded solution have identical
+    fitted values on observed samples; they differ only by a null-space component when
+    the global reference level is absent. ANCOMBC's EM step operates on coefficient
+    slots, so matching that representation matters even though predictions are
+    unchanged.
+    """
+    for intercept, start, stop, rows, local_ref, present in rebases:
+        if valid is not None:
+            keep = valid[rows]
+            if not np.any(keep):
+                continue
+            rows = rows[keep]
+            local_ref = local_ref[keep]
+            present = present[keep]
+
+        cols = start + local_ref
+        shift = beta[rows, cols].copy()
+        beta[rows, intercept] += shift
+
+        # Omitted non-reference levels are zero-filled by ANCOMBC rather than shifted.
+        block = beta[np.ix_(rows, np.arange(start, stop))]
+        block -= shift[:, None] * present
+        block[~present] = 0.0
+        beta[np.ix_(rows, np.arange(start, stop))] = block
+        # Make the feature-local reference exact rather than relying on subtraction
+        # roundoff; this is also how ANCOMBC's zero-filled global slot appears.
+        beta[rows, cols] = 0.0
 
 
 def _coef_estimable(Vh, S_inv):

@@ -443,6 +443,46 @@ class CoreTests(TestCase):
             npt.assert_allclose(obs_theta, exp_theta)
             npt.assert_allclose(obs_beta, exp_beta)
 
+    def test_lstsq_sparse_local_references(self):
+        # R/Patsy treatment coding chooses a new local reference when zero omission
+        # removes the global reference level but leaves at least two levels. Verify
+        # that the R-compatible sparse route reproduces a direct feature-local Patsy
+        # fit for multiple additive categorical terms plus a numeric covariate.
+        rng = np.random.default_rng(42)
+        a = np.repeat(["a0", "a1", "a2"], 12)
+        b = np.tile(np.repeat(["b0", "b1", "b2"], 4), 3)
+        metadata = pd.DataFrame({"a": a, "b": b, "x": rng.normal(size=36)})
+        dmat = dmatrix("a + b + x", metadata)
+        data = rng.normal(size=(36, 3))
+        missing = np.zeros(data.shape, dtype=bool)
+        missing[a == "a0", 0] = True
+        missing[(a == "a0") | (b == "b0"), 1] = True
+        data[missing] = np.nan
+
+        _, beta, estimable, _ = _lstsq_sparse_batch(
+            data, dmat, missing, False, batch=2, rank_mode="r",
+            estimate_theta=False,
+        )
+        self.assertIsNone(estimable)
+
+        names = dmat.design_info.column_names
+        for f in range(data.shape[1]):
+            observed = ~missing[:, f]
+            local = dmatrix("a + b + x", metadata.loc[observed])
+            coef = np.linalg.lstsq(
+                np.asarray(local), data[observed, f], rcond=None
+            )[0]
+            expected = np.zeros(len(names))
+            for name, value in zip(local.design_info.column_names, coef):
+                expected[names.index(name)] = value
+            npt.assert_allclose(beta[f], expected, atol=1e-12)
+
+        # In the first feature, a0 is absent and a1 becomes the local reference. In
+        # the second, both a0 and b0 are absent, so a1 and b1 become local references.
+        self.assertEqual(beta[0, names.index("a[T.a1]")], 0.0)
+        self.assertEqual(beta[1, names.index("a[T.a1]")], 0.0)
+        self.assertEqual(beta[1, names.index("b[T.b1]")], 0.0)
+
     def test_apply_pinv(self):
         data, missing = _transform_data(self.data1.astype(float), 0, True)
         dmat = self.dmat1

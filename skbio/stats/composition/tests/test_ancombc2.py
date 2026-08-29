@@ -31,6 +31,7 @@ from skbio.stats.composition._ancombc2 import (
     _calc_covariance,
     _calc_var_cov,
     _transform_data,
+    _validate_grouping,
     _estimate_bias_em,
     _sample_fractions,
     _format_results,
@@ -1189,6 +1190,59 @@ class CoreTests(TestCase):
         inherited = res.global_test()
         explicit = res.global_test(alpha=0.1, p_adjust="bh")
         pdt.assert_frame_equal(inherited, explicit)
+
+    def test_validate_grouping(self):
+        # metadata with a 3-category, a 2-category and a numeric column
+        metadata = pd.DataFrame({
+            "group": pd.Categorical(["a"] * 3 + ["b"] * 3 + ["c"] * 3),
+            "binary": pd.Categorical(["a"] * 5 + ["b"] * 4),
+            "score": np.array([0, 0, 1, 1, 2, 2, 0, 1, 2], dtype=float)})
+
+        # normal case: 3-category column
+        dmat = dmatrix("group", metadata)
+        obs = _validate_grouping(metadata, dmat, "group")
+        npt.assert_array_equal(obs, [1, 2])
+
+        # not in the formula
+        with self.assertRaisesRegex(ValueError, "must be a term in"):
+            _validate_grouping(metadata, dmat, "score")
+
+        # numeric column is prohibited
+        dmat = dmatrix("score", metadata)
+        with self.assertRaisesRegex(ValueError, "at least two group"):
+            _validate_grouping(metadata, dmat, "score")
+
+        # 2-category column is prohibited (post-hoc analysis needs at least 3)
+        dmat = dmatrix("binary", metadata)
+        with self.assertRaisesRegex(ValueError, "at least three observed groups"):
+            _validate_grouping(metadata, dmat, "binary")
+
+        # tricky case: 2-category column without intercept (will have 2 indices in
+        # design matrix but is still prohibited)
+        dmat = dmatrix("binary - 1", metadata)
+        with self.assertRaisesRegex(ValueError, "at least three observed groups"):
+            _validate_grouping(metadata, dmat, "binary")
+
+        # plain string column is okay
+        metadata["group"] = metadata["group"].astype(object)
+        dmat = dmatrix("group", metadata)
+        obs = _validate_grouping(metadata, dmat, "group")
+        npt.assert_array_equal(obs, [1, 2])
+
+        # complex formula
+        dmat = dmatrix("binary * group + score", metadata)
+        obs = _validate_grouping(metadata, dmat, "group")
+        npt.assert_array_equal(obs, [2, 3])
+        with self.assertRaisesRegex(ValueError, "at least two group"):
+            _validate_grouping(metadata, dmat, "score")
+        with self.assertRaisesRegex(ValueError, "at least three observed groups"):
+            _validate_grouping(metadata, dmat, "binary")
+
+        # numeric column cast into factor
+        metadata["score"] = pd.Categorical(metadata["score"].astype(int))
+        dmat = dmatrix("score", metadata)
+        obs = _validate_grouping(metadata, dmat, "score")
+        npt.assert_array_equal(obs, [1, 2])
 
 
 class AncombcTests(TestCase):

@@ -848,32 +848,20 @@ def _validate_grouping(metadata, dmat, grouping):
     if not isinstance(grouping, str):
         raise TypeError("`grouping` must be a metadata column name or None.")
     if grouping not in metadata.columns:
-        raise ValueError(f"`grouping`={grouping!r} is not a metadata column.")
-
-    term_slices = dmat.design_info.term_name_slices
-    if grouping not in term_slices:
-        terms = [name for name in term_slices if name != "Intercept"]
+        raise ValueError("`grouping` is not a metadata column.")
+    try:
+        s = dmat.design_info.term_name_slices[grouping]
+    except KeyError:
+        raise ValueError("`grouping` must be a term in `formula`.")
+    if metadata[grouping].nunique(dropna=True) < 3:
+        raise ValueError("`grouping` must contain at least three observed groups.")
+    idx = np.arange(s.start, s.stop)
+    if idx.size < 2:
         raise ValueError(
-            f"`grouping`={grouping!r} must be a term in `formula`. "
-            f"Available terms are: {terms}."
+            f"`grouping`={grouping!r} does not produce at least two covariates in "
+            "the design matrix. Make sure it is modeled as a categorical factor."
         )
-
-    n_groups = metadata[grouping].nunique(dropna=True)
-    if n_groups < 3:
-        raise ValueError(
-            f"`grouping`={grouping!r} must contain at least three observed groups "
-            f"for post-hoc analysis; found {n_groups}."
-        )
-
-    s = term_slices[grouping]
-    indices = np.arange(s.start, s.stop, dtype=int)
-    if indices.size < 2:
-        raise ValueError(
-            f"`grouping`={grouping!r} does not produce at least two group "
-            "coefficients in the design matrix. Ensure it is modeled as a "
-            "categorical factor."
-        )
-    return indices
+    return idx
 
 
 def _transform_data(data, pseudo=None, center=False):

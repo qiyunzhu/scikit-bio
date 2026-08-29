@@ -1209,7 +1209,7 @@ class CoreTests(TestCase):
 
         # numeric column is prohibited
         dmat = dmatrix("score", metadata)
-        with self.assertRaisesRegex(ValueError, "at least two group"):
+        with self.assertRaisesRegex(ValueError, "at least two covariates"):
             _validate_grouping(metadata, dmat, "score")
 
         # 2-category column is prohibited (post-hoc analysis needs at least 3)
@@ -1233,7 +1233,7 @@ class CoreTests(TestCase):
         dmat = dmatrix("binary * group + score", metadata)
         obs = _validate_grouping(metadata, dmat, "group")
         npt.assert_array_equal(obs, [2, 3])
-        with self.assertRaisesRegex(ValueError, "at least two group"):
+        with self.assertRaisesRegex(ValueError, "at least two covariates"):
             _validate_grouping(metadata, dmat, "score")
         with self.assertRaisesRegex(ValueError, "at least three observed groups"):
             _validate_grouping(metadata, dmat, "binary")

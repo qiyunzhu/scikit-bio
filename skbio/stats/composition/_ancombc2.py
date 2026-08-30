@@ -830,8 +830,7 @@ def _ancombc_core(
         _beta_hat=beta_hat,
         _var_hat=var_hat,
         _vcov_hat=vcov_hat,
-        _grouping=grouping,
-        _group_indices=groups,
+        _groups=groups,
         _dof=dof,
         _features=features,
         _covariates=covars,
@@ -2829,9 +2828,6 @@ class ANCOMBCResult:
         - ``Signif``: Whether the coefficient is significantly different from zero.
     method : {"ANCOM-BC", "ANCOM-BC2"}
         Differential abundance method used for the analysis.
-    grouping : str or None
-        Grouping term selected for post-hoc analysis, or None when post-hoc analyses
-        were not enabled.
     has_covariance : bool
         Whether a grouping covariance submatrix was retained.
 
@@ -2854,11 +2850,10 @@ class ANCOMBCResult:
 
     _private_defaults = {
         "_dmat": None,
+        "_groups": None,
         "_beta_hat": None,
         "_var_hat": None,
         "_vcov_hat": None,
-        "_grouping": None,
-        "_group_indices": None,
         "_dof": None,
         "_estimable": None,
         "_features": None,
@@ -2912,23 +2907,16 @@ class ANCOMBCResult:
         return self._method
 
     @property
-    def grouping(self) -> str | None:
-        """Grouping term selected for post-hoc analysis, if any."""
-        return self._grouping
-
-    @property
     def has_covariance(self) -> bool:
         """Whether a grouping covariance submatrix was retained."""
         return self._vcov_hat is not None
 
-    def _require_grouping(self, method):
+    def _require_groups(self, method):
         """Require an upstream grouping for post-hoc analyses."""
-        if self._grouping is None:
-            func = "ancombc2" if self.method == "ANCOM-BC2" else "ancombc"
+        if self._groups is None:
             raise ValueError(
-                f"`{method}` requires a post-hoc grouping. Rerun "
-                f"`{func}(..., grouping=<metadata column>)` to enable post-hoc "
-                "analysis."
+                f"`{method}` requires a post-hoc grouping. Rerun the function with "
+                "`grouping` specified to enable post-hoc analysis."
             )
 
     def __getitem__(self, key):
@@ -2959,7 +2947,7 @@ class ANCOMBCResult:
         """Return feature-level estimability for the selected grouping term."""
         if self._estimable is None:
             return None
-        valid = np.all(self._estimable[:, self._group_indices], axis=1)
+        valid = np.all(self._estimable[:, self._groups], axis=1)
         return None if np.all(valid) else valid
 
     def global_test(
@@ -3000,14 +2988,12 @@ class ANCOMBCResult:
             - ``Signif``: Whether at least one group mean is different from others.
 
         """
-        self._require_grouping("global_test")
+        self._require_groups("global_test")
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
         W, pval, qval, reject = _global_test(
-            dmat=self._dmat,
-            grouping=self._grouping,
+            groups=self._groups,
             beta_hat=self._beta_hat,
             vcov_hat=self._vcov_hat,
-            group_indices=self._group_indices,
             p_adjust=p_adjust,
             alpha=alpha,
             dof=self._dof,
@@ -3064,16 +3050,15 @@ class ANCOMBCResult:
             - ``Signif``: Whether the contrast is significantly different from zero.
 
         """
-        self._require_grouping("pairwise_test")
+        self._require_groups("pairwise_test")
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
 
         raw = _pairwise_test(
             dmat=self._dmat,
-            grouping=self._grouping,
+            groups=self._groups,
             beta_hat=self._beta_hat,
             var_hat=self._var_hat,
             vcov_hat=self._vcov_hat,
-            group_indices=self._group_indices,
             dof=self._dof,
             p_adjust=p_adjust,
             alpha=alpha,
@@ -3146,15 +3131,14 @@ class ANCOMBCResult:
             - ``Signif``: Whether the group differs significantly from the reference.
 
         """
-        self._require_grouping("dunnett_test")
+        self._require_groups("dunnett_test")
         rng = get_rng(seed)
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
 
         raw = _dunnett_test(
             dmat=self._dmat,
-            grouping=self._grouping,
+            groups=self._groups,
             beta_hat=self._beta_hat,
-            group_indices=self._group_indices,
             var_hat=self._var_hat,
             dof=self._dof,
             bootstraps=bootstraps,
@@ -3234,17 +3218,15 @@ class ANCOMBCResult:
         the Dunnett's test (:meth:`dunnett_test`) is more stable.
 
         """
-        self._require_grouping("trend_test")
+        self._require_groups("trend_test")
         rng = get_rng(seed)
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
 
         raw = _trend_test(
-            dmat=self._dmat,
-            grouping=self._grouping,
+            groups=self._groups,
             beta_hat=self._beta_hat,
             var_hat=self._var_hat,
             vcov_hat=self._vcov_hat,
-            group_indices=self._group_indices,
             p_adjust=p_adjust,
             alpha=alpha,
             trend_contrast=trend_contrast,
@@ -3266,12 +3248,6 @@ class ANCOMBCResult:
         return result
 
 
-def _group_indices_from_design(dmat, grouping):
-    """Return the design-matrix column indices for a named model term."""
-    s = dmat.design_info.term_name_slices[grouping]
-    return np.arange(s.start, s.stop, dtype=int)
-
-
 def _select_group_covariance(vcov_hat, group_indices):
     """Return a grouping covariance submatrix from full or already-subset storage."""
     group_indices = np.asarray(group_indices, dtype=int)
@@ -3282,25 +3258,18 @@ def _select_group_covariance(vcov_hat, group_indices):
 
 
 def _global_test(
-    dmat,
-    grouping,
+    groups,
     beta_hat,
     vcov_hat,
     alpha=0.05,
     p_adjust="holm",
     dof=None,
-    group_indices=None,
     estimable=None,
 ):
     """Perform ANCOM-BC global test."""
-    if group_indices is None:
-        group_ind = _group_indices_from_design(dmat, grouping)
-    else:
-        group_ind = np.asarray(group_indices, dtype=int)
-    n_groups = group_ind.size
-
-    beta_hat_sub = beta_hat[:, group_ind]
-    vcov_hat_sub = _select_group_covariance(vcov_hat, group_ind)
+    n_groups = groups.size
+    beta_hat_sub = beta_hat[:, groups]
+    vcov_hat_sub = _select_group_covariance(vcov_hat, groups)
 
     # Keep the previous vectorized path unchanged when all grouping coefficients are
     # estimable. Otherwise, avoid feeding arbitrary pseudoinverse coefficients or
@@ -3346,14 +3315,13 @@ def _global_test(
 
 def _pairwise_test(
     dmat,
-    grouping,
+    groups,
     beta_hat,
     var_hat,
     vcov_hat,
     dof,
     p_adjust="holm",
     alpha=0.05,
-    group_indices=None,
     estimable=None,
 ):
     """ANCOM-BC2 pairwise directional test.
@@ -3362,18 +3330,13 @@ def _pairwise_test(
     and its variance, then apply mdFDR correction.
     """
     covariates = dmat.design_info.column_names
-    if group_indices is None:
-        group_ind = _group_indices_from_design(dmat, grouping)
-    else:
-        group_ind = np.asarray(group_indices, dtype=int)
-
-    beta_hat_sub = beta_hat[:, group_ind]
-    group_covars = [covariates[i] for i in group_ind]
-    vcov_group = _select_group_covariance(vcov_hat, group_ind)
+    beta_hat_sub = beta_hat[:, groups]
+    group_covars = [covariates[i] for i in groups]
+    vcov_group = _select_group_covariance(vcov_hat, groups)
 
     # Compute pairwise differences and their variances
     n_tax = beta_hat.shape[0]
-    n_group = group_ind.size
+    n_group = groups.size
 
     # Generate all pairwise comparisons
     pair_names = []
@@ -3392,7 +3355,7 @@ def _pairwise_test(
     # Individual effects
     for k in range(n_group):
         beta_pair[:, k] = beta_hat_sub[:, k]
-        var_pair[:, k] = var_hat[:, group_ind[k]]
+        var_pair[:, k] = var_hat[:, groups[k]]
 
     # Pairwise differences
     for k, (j, i) in enumerate(pair_indices):
@@ -3414,12 +3377,11 @@ def _pairwise_test(
         dof=dof,
         fwer_ctrl=p_adjust,
         dmat=dmat,
-        group=grouping,
+        groups=groups,
         beta_hat=beta_hat,
         vcov_hat=vcov_group,
         alpha=alpha,
         dof_global=dof,
-        group_indices=group_ind,
         estimable=estimable,
     )
     reject = qval <= alpha
@@ -3440,12 +3402,11 @@ def _mdfdr_pairwise(
     dof,
     fwer_ctrl,
     dmat,
-    group,
+    groups,
     beta_hat,
     vcov_hat,
     alpha,
     dof_global=None,
-    group_indices=None,
     estimable=None,
 ):
     """Perform mixed directional FDR (mdFDR) correction for pairwise tests.
@@ -3462,14 +3423,12 @@ def _mdfdr_pairwise(
 
     # Screen for significant comparisons using global test
     _, _, _, signif = _global_test(
-        dmat=dmat,
-        grouping=group,
+        groups=groups,
         beta_hat=beta_hat,
         vcov_hat=vcov_hat,
         p_adjust="BH",  # TODO: Question: Is "BH" hard-coded? Not inherit?
         alpha=alpha,
         dof=dof_global,
-        group_indices=group_indices,
         estimable=estimable,
     )
     n_signs = signif.sum().item()  # R
@@ -3527,7 +3486,7 @@ def _var_diff(vcov_sub):
 
 def _dunnett_test(
     dmat,
-    grouping,
+    groups,
     beta_hat,
     var_hat,
     dof,
@@ -3535,7 +3494,6 @@ def _dunnett_test(
     rng,
     p_adjust,
     alpha,
-    group_indices=None,
     estimable=None,
 ):
     """ANCOM-BC2 Dunnett's type of test.
@@ -3543,13 +3501,8 @@ def _dunnett_test(
     Compare each group to the reference group with mdFDR correction.
     """
     covariates = dmat.design_info.column_names
-    if group_indices is None:
-        group_ind = _group_indices_from_design(dmat, grouping)
-    else:
-        group_ind = np.asarray(group_indices, dtype=int)
-
-    beta_hat_dunn = beta_hat[:, group_ind]
-    var_hat_dunn = var_hat[:, group_ind]
+    beta_hat_dunn = beta_hat[:, groups]
+    var_hat_dunn = var_hat[:, groups]
     if estimable is not None:
         beta_hat_dunn[~estimable] = np.nan
         var_hat_dunn[~estimable] = np.nan
@@ -3561,8 +3514,6 @@ def _dunnett_test(
         W=W_dunn,
         dof=dof,
         fwer_ctrl=p_adjust,
-        dmat=dmat,
-        group=grouping,
         bootstraps=bootstraps,
         rng=rng,
         alpha=alpha,
@@ -3576,20 +3527,16 @@ def _dunnett_test(
         "p_val": p_val,
         "q_val": q_val,
         "reject": q_val <= alpha,
-        "comp_names": [covariates[i] for i in group_ind],
+        "comp_names": [covariates[i] for i in groups],
     }
 
 
-def _mdfdr_dunnett(
-    W, dof, fwer_ctrl, dmat, group, bootstraps, alpha, rng, estimable=None
-):
+def _mdfdr_dunnett(W, dof, fwer_ctrl, bootstraps, alpha, rng, estimable=None):
     """mdFDR correction for Dunnett's test."""
     n_feats, n_comps = W.shape
 
     # Step 1: Global test screening via bootstrap
     res_screen = _dunn_global(
-        dmat=dmat,
-        group=group,
         W=W,
         bootstraps=bootstraps,
         dof=dof,
@@ -3633,15 +3580,12 @@ def _mdfdr_dunnett(
     return p_val, q_val
 
 
-def _dunn_global(dmat, group, W, bootstraps, dof, p_adjust, alpha, rng, estimable=None):
+def _dunn_global(W, bootstraps, dof, p_adjust, alpha, rng, estimable=None):
     """Dunnett's global test for mdFDR.
 
     Bootstrap-based: generate null W from t-distribution, take max |W|.
     """
     n_tax = W.shape[0]
-    covariates = dmat.design_info.column_names
-    group_ind = np.array([group in c and ":" not in c for c in covariates])
-    n_group = int(np.sum(group_ind))
 
     # Observed global statistic: max |W| per taxon
     W_global = np.max(np.abs(W), axis=1)
@@ -3684,8 +3628,7 @@ def _dunn_global(dmat, group, W, bootstraps, dof, p_adjust, alpha, rng, estimabl
 
 
 def _trend_test(
-    dmat,
-    grouping,
+    groups,
     beta_hat,
     var_hat,
     vcov_hat,
@@ -3695,7 +3638,6 @@ def _trend_test(
     trend_node=None,
     bootstraps=100,
     rng=None,
-    group_indices=None,
     estimable=None,
 ):
     """ANCOM-BC2 trend test (pattern analysis).
@@ -3703,15 +3645,11 @@ def _trend_test(
     Uses constrained optimization to test ordered patterns in group effects.
     """
     n_feats = beta_hat.shape[0]
-    if group_indices is None:
-        group_ind = _group_indices_from_design(dmat, grouping)
-    else:
-        group_ind = np.asarray(group_indices, dtype=int)
-    n_group = group_ind.size
+    n_group = groups.size
 
-    beta_hat_sub = beta_hat[:, group_ind]
-    var_hat_sub = var_hat[:, group_ind]
-    vcov_hat_sub = _select_group_covariance(vcov_hat, group_ind)
+    beta_hat_sub = beta_hat[:, groups]
+    var_hat_sub = var_hat[:, groups]
+    vcov_hat_sub = _select_group_covariance(vcov_hat, groups)
 
     # Keep the original path when all grouping coefficients are identifiable. If not,
     # compact only the valid rows for the expensive constrained optimization/bootstrap

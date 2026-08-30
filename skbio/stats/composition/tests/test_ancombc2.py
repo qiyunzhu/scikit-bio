@@ -1421,8 +1421,7 @@ class Ancombc2Tests(TestCase):
         self.assertEqual(res._dmat.design_info.column_names, ["Intercept", "grouping[T.treatment]"])
         self.assertFalse(res.has_covariance)
         self.assertIsNone(res._vcov_hat)
-        self.assertIsNone(res.grouping)
-        with self.assertRaisesRegex(ValueError, "grouping=<metadata column>"):
+        with self.assertRaisesRegex(ValueError, "requires a post-hoc grouping"):
             res.global_test()
 
         # A two-level factor is valid in the primary model but cannot be selected as
@@ -1600,7 +1599,7 @@ class Ancombc2Tests(TestCase):
         for method in (
             res.global_test, res.pairwise_test, res.dunnett_test, res.trend_test
         ):
-            with self.assertRaisesRegex(ValueError, "grouping=<metadata column>"):
+            with self.assertRaisesRegex(ValueError, "requires a post-hoc grouping"):
                 method()
 
         # Three groups retain only the grouping covariance submatrix.
@@ -1616,7 +1615,6 @@ class Ancombc2Tests(TestCase):
         res = ancombc2(
             table, metadata, "grouping + age", grouping="grouping", max_iter=2
         )
-        self.assertEqual(res.grouping, "grouping")
         self.assertTrue(res.has_covariance)
         self.assertEqual(res._vcov_hat.shape, (table.shape[1], 2, 2))
         self.assertEqual(res.global_test().shape[0], table.shape[1])
@@ -1850,8 +1848,6 @@ class PostHocTests(TestCase):
             W=W,
             dof=10.0,
             fwer_ctrl="holm",
-            dmat=None,
-            group="group",
             bootstraps=100,
             rng=np.random.default_rng(123),
             alpha=0.05,

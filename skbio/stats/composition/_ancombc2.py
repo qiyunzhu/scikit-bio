@@ -347,8 +347,8 @@ def ancombc(
     return _ancombc_core(
         table=table,
         metadata=metadata,
-        v2=False,
         formula=formula,
+        v2=False,
         grouping=grouping,
         max_iter=max_iter,
         tol=tol,
@@ -365,7 +365,6 @@ def ancombc2(
     pseudocount=0,
     aggregator=None,
     var_quantile=0.05,
-    rank_mode="r",
     max_iter=100,
     tol=1e-5,
     p_adjust="holm",
@@ -407,15 +406,6 @@ def ancombc2(
     var_quantile : float, optional
         Quantile of coefficient variances used to calculate a variance-stabilizing
         offset. Must be between 0 and 1. Set to 0 to disable. Default is 0.05.
-    rank_mode : {"r", "coefficient"}, optional
-        How to handle rank-deficient feature-specific regressions when zero counts are
-        treated as missing. ``"r"`` (default) reproduces R ANCOMBC2's whole-fit
-        failure when a categorical predictor is reduced to one observed level. For
-        ordinary additive treatment-coded factors, it also uses the first remaining
-        Patsy level as a feature-local reference when the global reference is absent.
-        ``"coefficient"`` instead keeps the Moore-Penrose fit and suppresses only
-        coefficients that are not uniquely estimable. This option has no effect when
-        a positive pseudocount is used.
     max_iter : int, optional
         Maximum number of iterations for the bias estimation process. Default is 100.
     tol : float, optional
@@ -435,21 +425,6 @@ def ancombc2(
     -------
     :class:`ANCOMBCResult`
         Result object with primary results and post-hoc analysis methods.
-
-    Notes
-    -----
-    With ``pseudocount=0``, zero counts are excluded from feature-specific log-linear
-    fits. By default, scikit-bio mirrors R ANCOMBC2 when this omission leaves a
-    categorical predictor with only one observed level: the entire feature fit is
-    unavailable, with ``Log(FC)``, ``SE`` and ``W`` reported as NaN,
-    ``pvalue=qvalue=1``, and ``Signif=False``. If an ordinary additive
-    treatment-coded factor retains multiple levels but loses its global reference, the
-    first remaining level in Patsy's category order is used as a feature-local
-    reference before bias estimation. This reference rebasing is intentionally not
-    applied to interactions or custom contrasts, whose coefficient bases require a
-    joint transformation. ``rank_mode="coefficient"`` retains the Moore-Penrose fit
-    instead and suppresses only coefficients that are not uniquely estimable. Use
-    :func:`struc_zero` when group-specific absence itself is of scientific interest.
 
     See Also
     --------
@@ -644,25 +619,24 @@ def ancombc2(
     return _ancombc_core(
         table=table,
         metadata=metadata,
-        v2=True,
         formula=formula,
+        v2=True,
         grouping=grouping,
+        aggregator=aggregator,
         max_iter=max_iter,
         tol=tol,
         alpha=alpha,
         p_adjust=p_adjust,
         pseudo=pseudocount,
         var_quantile=var_quantile,
-        aggregator=aggregator,
-        rank_mode=rank_mode,
     )
 
 
 def _ancombc_core(
     table,
     metadata,
+    formula,
     v2=False,
-    formula=None,
     grouping=None,
     aggregator=None,
     p_adjust="holm",
@@ -673,7 +647,47 @@ def _ancombc_core(
     max_iter=100,
     tol=1e-5,
 ):
-    """ANCOM-BC/BC2 core function."""
+    """ANCOM-BC/BC2 core function.
+
+    Parameters
+    ----------
+    rank_mode : {"r", "coefficient"}, optional
+        How to handle rank-deficient feature-specific regressions. Relevant when input
+        data table contain zeros.
+
+        - "r" (default) reproduces R package ANCOMBC's behavior, which reduces a
+          categorical predictor to one observed level. For ordinary additive treatment-
+          coded factors, it also uses the first remaining level in the Patsy-processed
+          formula as a feature-local reference when the global reference is absent.
+
+        - "coefficient" keeps the Moore-Penrose fit and suppresses only coefficients
+          that are not uniquely estimable.
+
+    Notes
+    -----
+    By default (`rank_mode="r"`), scikit-bio mirrors the R code when this omission
+    leaves a categorical predictor with only one observed level: the entire feature
+    fit is unavailable, with `Log(FC)`, `SE` and `W`` reported as NaN, `pvalue` and
+    `qvalue` as 1, and `Signif` as False.
+
+    If an ordinary additive treatment-coded factor retains multiple levels but loses
+    its global reference, the first remaining level in Patsy's category order is used
+    as a feature-local reference before bias estimation. This often happens when the
+    data is highly sparse and certain features are zeros within the entire reference
+    group.
+
+    This reference rebasing is intentionally not applied to interactions or custom
+    contrasts, whose coefficient bases require a joint transformation. Therefore, when
+    complex formulae are specified, scikit-bio may not precisely mirror the R behavior.
+    This is by design since the two programming languages are not entirely consistent
+    in the handling of statistical models.
+
+    The alternative mode `rank_mode="coefficient"` retains the Moore-Penrose fit
+    instead and suppresses only coefficients that are not uniquely estimable.
+    Statistically, this mode is more favorable. It is off by default to preserve the R
+    behavior. But it is worth further investigation.
+
+    """
     # Validate parameters
     if not 0 < alpha < 1:
         raise ValueError(f"`alpha`={alpha} is not within 0 and 1.")
@@ -681,8 +695,6 @@ def _ancombc_core(
         raise ValueError("`var_quantile` must be between 0 and 1.")
     if not pseudo >= 0:
         raise ValueError(f"Pseudocount must be a non-negative number.")
-    if rank_mode not in {"r", "coefficient"}:
-        raise ValueError("`rank_mode` must be 'r' or 'coefficient'.")
 
     matrix, samples, features = _ingest_table(table)
 
@@ -2820,9 +2832,8 @@ class ANCOMBCResult:
     - ``qvalue``: *p*-value corrected for multiple testing.
 
     - ``Signif``: Whether the covariate category is significantly differentially
-        abundant from the reference category. A feature-covariate pair is marked as
-        "True" if the *q*-value is less than or equal to the significance level
-        (``alpha``).
+      abundant from the reference category. A feature-covariate pair is marked as
+      "True" if the *q*-value is less than or equal to the significance level.
 
     See Also
     --------

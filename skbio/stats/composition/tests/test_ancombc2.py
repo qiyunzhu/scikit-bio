@@ -43,6 +43,7 @@ from skbio.stats.composition._ancombc2 import (
     _constrain_est,
     _constrain_est_identity,
     _mdfdr_dunnett,
+    _ancombc_core,
     struc_zero,
     ancombc,
     ancombc2,
@@ -1440,11 +1441,6 @@ class Ancombc2Tests(TestCase):
                     var_quantile=var_quantile,
                 )
 
-        with self.assertRaisesRegex(ValueError, "`rank_mode`"):
-            ancombc2(
-                self.table, self.grouping.to_frame(), "grouping", rank_mode="bad"
-            )
-
         obs = res.result["Signif"].to_numpy()
 
         # expected differential abundance of intercept and grouping
@@ -1495,7 +1491,8 @@ class Ancombc2Tests(TestCase):
             npt.assert_array_equal(estimable[-2:], [[True, False], [False, False]])
             npt.assert_array_equal(rank, [2] * 8 + [1, 1])
 
-        res = ancombc2(table, metadata, "group", rank_mode="coefficient")
+        res = _ancombc_core(table, metadata, "group", v2=True, rank_mode="coefficient")
+
         self.assertTrue(np.isfinite(res._beta_hat).all())
         npt.assert_array_equal(
             res._estimable[-2:], [[True, False], [False, False]]
@@ -1564,9 +1561,10 @@ class Ancombc2Tests(TestCase):
         )
         self.assertTrue(np.isfinite(res_r.global_test().loc["partial", "W"]))
 
-        res = ancombc2(
-            table, metadata, "group", grouping="group", rank_mode="coefficient"
+        res = _ancombc_core(
+            table, metadata, "group", v2=True, grouping="group", rank_mode="coefficient"
         )
+
         npt.assert_array_equal(res._estimable[-1], [True, True, False])
 
         row = res.global_test().loc["partial"]

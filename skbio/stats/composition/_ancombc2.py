@@ -2849,14 +2849,7 @@ class ANCOMBCResult:
     }
 
     def __init__(self, result: pd.DataFrame, method: str, **kwargs):
-        unexpected = set(kwargs).difference(self._private_defaults)
-        if unexpected:
-            names = ", ".join(sorted(unexpected))
-            raise TypeError(f"Unexpected ANCOMBCResult argument(s): {names}")
-        if method not in {"ANCOM-BC", "ANCOM-BC2"}:
-            raise ValueError("`method` must be either 'ANCOM-BC' or 'ANCOM-BC2'.")
-
-        self.result = result
+        self._result = result
         self._method = method
         for name, default in self._private_defaults.items():
             setattr(self, name, kwargs.get(name, default))
@@ -2866,21 +2859,17 @@ class ANCOMBCResult:
         """Primary differential abundance result table."""
         return self._result
 
-    @result.setter
-    def result(self, value: pd.DataFrame):
-        self._result = value
-
     def __getitem__(self, key):
         """Select columns or rows from the primary result table."""
-        return self.result[key]
+        return self._result[key]
 
     def __repr__(self):
         """Display the primary result table."""
-        return repr(self.result)
+        return repr(self._result)
 
     def _repr_html_(self):
         """Display the primary result table in rich notebook frontends."""
-        return self.result._repr_html_()
+        return self._result._repr_html_()
 
     def _require_groups(self, method):
         """Require an upstream grouping for post-hoc analyses."""

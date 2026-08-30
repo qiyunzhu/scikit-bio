@@ -824,7 +824,7 @@ def _ancombc_core(
     method = "ANCOM-BC" if not v2 else "ANCOM-BC2"
 
     return ANCOMBCResult(
-        res=res,
+        result=res,
         method=method,
         _dmat=dmat,
         _beta_hat=beta_hat,
@@ -2791,56 +2791,38 @@ def _adjust_pvalues(pval, method, out=None):
 
 
 class ANCOMBCResult:
-    """Results for ANCOM-BC and ANCOM-BC2 analyses.
+    r"""Results for ANCOM-BC and ANCOM-BC2 analyses.
 
     This class contains the primary differential abundance results. The object displays
-    as the primary result table and supports ``[]`` selection like a pandas DataFrame;
-    the underlying DataFrame is available through :attr:`result`. Post-hoc analyses
-    are available as methods that compute on-demand when a ``grouping`` was specified
-    in the upstream :func:`ancombc` or :func:`ancombc2` call. Only the covariance
-    submatrices required for that grouping are retained.
+    as the primary result table and supports ``[]`` selection like a pandas DataFrame.
+    The underlying DataFrame is available through :attr:`result`. Post-hoc analyses are
+    available as methods that compute on-demand when a ``grouping`` was specified in
+    the upstream :func:`ancombc` or :func:`ancombc2` call.
 
-    Attributes
-    ----------
-    result : pd.DataFrame
-        Primary differential abundance results with a (FeatureID, Covariate)
-        multi-index. The index levels and columns are:
+    The primary result table has a (FeatureID, Covariate) multi-index. The index levels
+    and columns are:
 
-        - ``FeatureID``: Feature identifier, i.e., dependent variable.
+    - ``FeatureID``: Feature identifier, i.e., dependent variable.
 
-        - ``Covariate``: Model coefficient associated with a metadata covariate or
-          factor level.
+    - ``Covariate``: Covariate name, i.e., independent variable.
 
-        - ``Log(FC)``: Bias-corrected estimated model coefficient on the natural-log
-          abundance scale. NaN indicates that the coefficient is not uniquely
-          identifiable from the observed samples for that feature.
+    - ``Log(FC)``: Estimated model coefficient representing natural-log-fold change of
+      abundance from the reference category to the covariate category defined in the
+      formula. NaN indicates that the value is not estimable from the observed data.
 
-        - ``SE``: Standard error of the estimated coefficient; NaN for a non-estimable
-          coefficient.
+    - ``SE``: Standard error of the estimated coefficient, or NaN if not estimable.
 
-        - ``W``: *W*-statistic, calculated as the estimated coefficient divided by its
-          standard error.
+    - ``W``: *W*-statistic, calculated as the estimated coefficient value divided by
+      its standard error.
 
-        - ``pvalue``: Uncorrected *p*-value of the *W*-statistic.
+    - ``pvalue``: Uncorrected *p*-value of the *W*-statistic.
 
-        - ``qvalue``: *p*-value corrected for multiple testing.
+    - ``qvalue``: *p*-value corrected for multiple testing.
 
-        - ``Signif``: Whether the coefficient is significantly different from zero.
-    method : {"ANCOM-BC", "ANCOM-BC2"}
-        Differential abundance method used for the analysis.
-    has_covariance : bool
-        Whether a grouping covariance submatrix was retained.
-
-    Methods
-    -------
-    global_test
-        Global test for differential abundance across >= 3 groups.
-    dunnett_test
-        Dunnett's test: each group vs. reference, with mdFDR correction.
-    pairwise_test
-        Pairwise directional test between all group pairs, with mdFDR.
-    trend_test
-        Trend test for ordered patterns in group effects.
+    - ``Signif``: Whether the covariate category is significantly differentially
+        abundant from the reference category. A feature-covariate pair is marked as
+        "True" if the *q*-value is less than or equal to the significance level
+        (``alpha``).
 
     See Also
     --------
@@ -2866,12 +2848,7 @@ class ANCOMBCResult:
         "_pseudo": 0,
     }
 
-    def __init__(
-        self,
-        res: pd.DataFrame,
-        method: str,
-        **kwargs,
-    ):
+    def __init__(self, result: pd.DataFrame, method: str, **kwargs):
         unexpected = set(kwargs).difference(self._private_defaults)
         if unexpected:
             names = ", ".join(sorted(unexpected))
@@ -2879,7 +2856,7 @@ class ANCOMBCResult:
         if method not in {"ANCOM-BC", "ANCOM-BC2"}:
             raise ValueError("`method` must be either 'ANCOM-BC' or 'ANCOM-BC2'.")
 
-        self.result = res
+        self.result = result
         self._method = method
         for name, default in self._private_defaults.items():
             setattr(self, name, kwargs.get(name, default))
@@ -2893,39 +2870,9 @@ class ANCOMBCResult:
     def result(self, value: pd.DataFrame):
         self._result = value
 
-    @property
-    def res(self) -> pd.DataFrame:
-        """Alias of :attr:`result` for backward compatibility."""
-        return self._result
-
-    @res.setter
-    def res(self, value: pd.DataFrame):
-        self._result = value
-
-    @property
-    def method(self) -> str:
-        return self._method
-
-    @property
-    def has_covariance(self) -> bool:
-        """Whether a grouping covariance submatrix was retained."""
-        return self._vcov_hat is not None
-
-    def _require_groups(self, method):
-        """Require an upstream grouping for post-hoc analyses."""
-        if self._groups is None:
-            raise ValueError(
-                f"`{method}` requires a post-hoc grouping. Rerun the function with "
-                "`grouping` specified to enable post-hoc analysis."
-            )
-
     def __getitem__(self, key):
         """Select columns or rows from the primary result table."""
         return self.result[key]
-
-    def keys(self):
-        """Return column labels of the primary result table."""
-        return self.result.keys()
 
     def __repr__(self):
         """Display the primary result table."""
@@ -2934,6 +2881,14 @@ class ANCOMBCResult:
     def _repr_html_(self):
         """Display the primary result table in rich notebook frontends."""
         return self.result._repr_html_()
+
+    def _require_groups(self, method):
+        """Require an upstream grouping for post-hoc analyses."""
+        if self._groups is None:
+            raise ValueError(
+                f"`{method}` requires a post-hoc grouping. Rerun the function with "
+                "`grouping` specified to enable post-hoc analysis."
+            )
 
     def _stat_params(self, alpha, p_adjust):
         """Get FDR-correction method and significance level from upstream."""
@@ -2953,7 +2908,7 @@ class ANCOMBCResult:
     def global_test(
         self, alpha: float | str = "inherit", p_adjust: str = "inherit"
     ) -> pd.DataFrame:
-        """Perform global test for differential abundance across groups.
+        r"""Perform global test for differential abundance across groups.
 
         The global test identifies features that are differentially abundant between at
         least two groups across three or more groups.
@@ -3011,7 +2966,7 @@ class ANCOMBCResult:
         alpha: float | str = "inherit",
         p_adjust: str = "inherit",
     ) -> pd.DataFrame:
-        """Perform pairwise directional test between all group pairs.
+        r"""Perform pairwise directional test between all group pairs.
 
         Uses mixed directional FDR (mdFDR) correction via bootstrap.
 
@@ -3089,7 +3044,7 @@ class ANCOMBCResult:
         bootstraps: int = 100,
         seed: SeedLike | None = None,
     ) -> pd.DataFrame:
-        """Perform Dunnett's test (each group vs. reference) with mdFDR.
+        r"""Perform Dunnett's test (each group vs. reference) with mdFDR.
 
         Parameters
         ----------
@@ -3248,13 +3203,12 @@ class ANCOMBCResult:
         return result
 
 
-def _select_group_covariance(vcov_hat, group_indices):
-    """Return a grouping covariance submatrix from full or already-subset storage."""
-    group_indices = np.asarray(group_indices, dtype=int)
-    k = group_indices.size
-    if vcov_hat.shape[1:] == (k, k):
+def _group_covmat(vcov_hat, groups):
+    """Return a grouping covariance submatrix."""
+    k = groups.size
+    if vcov_hat.shape[1:] == (k, k):  # full matrix
         return vcov_hat
-    return vcov_hat[:, group_indices][:, :, group_indices]
+    return vcov_hat[:, groups][:, :, groups]  # submatrix
 
 
 def _global_test(
@@ -3269,7 +3223,7 @@ def _global_test(
     """Perform ANCOM-BC global test."""
     n_groups = groups.size
     beta_hat_sub = beta_hat[:, groups]
-    vcov_hat_sub = _select_group_covariance(vcov_hat, groups)
+    vcov_hat_sub = _group_covmat(vcov_hat, groups)
 
     # Keep the previous vectorized path unchanged when all grouping coefficients are
     # estimable. Otherwise, avoid feeding arbitrary pseudoinverse coefficients or
@@ -3332,7 +3286,7 @@ def _pairwise_test(
     covariates = dmat.design_info.column_names
     beta_hat_sub = beta_hat[:, groups]
     group_covars = [covariates[i] for i in groups]
-    vcov_group = _select_group_covariance(vcov_hat, groups)
+    vcov_group = _group_covmat(vcov_hat, groups)
 
     # Compute pairwise differences and their variances
     n_tax = beta_hat.shape[0]
@@ -3649,7 +3603,7 @@ def _trend_test(
 
     beta_hat_sub = beta_hat[:, groups]
     var_hat_sub = var_hat[:, groups]
-    vcov_hat_sub = _select_group_covariance(vcov_hat, groups)
+    vcov_hat_sub = _group_covmat(vcov_hat, groups)
 
     # Keep the original path when all grouping coefficients are identifiable. If not,
     # compact only the valid rows for the expensive constrained optimization/bootstrap

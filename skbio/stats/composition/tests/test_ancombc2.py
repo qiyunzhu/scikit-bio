@@ -1270,16 +1270,14 @@ class AncombcTests(TestCase):
         res = ancombc(table + 1, metadata, "grouping")
 
         # check "method" attribute in result
-        self.assertEqual(res.method, "ANCOM-BC")
+        self.assertEqual(res._method, "ANCOM-BC")
 
         # The result object presents itself as the primary DataFrame while retaining an
-        # explicit ``result`` attribute. ``res`` remains a compatibility alias.
-        self.assertIs(res.res, res.result)
+        # explicit ``result`` attribute.
         pdt.assert_series_equal(res["qvalue"], res.result["qvalue"])
         selected = res[res["qvalue"] <= 0.05]
         expected = res.result[res.result["qvalue"] <= 0.05]
         pdt.assert_frame_equal(selected, expected)
-        self.assertTrue(res.keys().equals(res.result.columns))
         self.assertEqual(repr(res), repr(res.result))
         self.assertEqual(res._repr_html_(), res.result._repr_html_())
 
@@ -1416,10 +1414,9 @@ class Ancombc2Tests(TestCase):
     def test_ancombc2(self):
         # ancom-bc2 results of test dataset
         res = ancombc2(self.table, self.grouping.to_frame(), "grouping")
-        self.assertEqual(res.method, "ANCOM-BC2")
+        self.assertEqual(res._method, "ANCOM-BC2")
         self.assertIsInstance(res._dmat, DesignMatrix)
         self.assertEqual(res._dmat.design_info.column_names, ["Intercept", "grouping[T.treatment]"])
-        self.assertFalse(res.has_covariance)
         self.assertIsNone(res._vcov_hat)
         with self.assertRaisesRegex(ValueError, "requires a post-hoc grouping"):
             res.global_test()
@@ -1595,7 +1592,7 @@ class Ancombc2Tests(TestCase):
 
     def test_grouping_controls_posthoc_availability(self):
         res = ancombc2(self.table, self.grouping.to_frame(), "grouping")
-        self.assertFalse(res.has_covariance)
+        self.assertIsNone(res._vcov_hat)
         for method in (
             res.global_test, res.pairwise_test, res.dunnett_test, res.trend_test
         ):
@@ -1615,7 +1612,7 @@ class Ancombc2Tests(TestCase):
         res = ancombc2(
             table, metadata, "grouping + age", grouping="grouping", max_iter=2
         )
-        self.assertTrue(res.has_covariance)
+        self.assertIsNotNone(res._vcov_hat)
         self.assertEqual(res._vcov_hat.shape, (table.shape[1], 2, 2))
         self.assertEqual(res.global_test().shape[0], table.shape[1])
         self.assertEqual(

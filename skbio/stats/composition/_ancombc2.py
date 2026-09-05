@@ -106,6 +106,55 @@ def ancombc(
     ancombc2
     struc_zero
 
+    Notes
+    -----
+    This function is a Python re-implementation of the ANCOM-BC method [1]_, which was
+    originally implemented in the R package ``ANCOMBC``. This function provides an
+    efficient and scalable algorithm, with a simple interface consistent with other
+    scikit-bio components. The output of this function should match that of the R
+    package.
+
+    Comparing with the R command ``ancombc``, this function defers the flexibility of
+    data preprocessing to the user. Most importantly, if the input table contains zero
+    values (which is common), one needs to remove them by, e.g., adding a pseudocount
+    of 1 (``pseudo=1`` in the R command's parameters) (assuming ``table`` is a pandas
+    DataFrame):
+
+    .. code-block:: python
+
+       table += 1
+
+    See also :func:`multi_replace` for additional information on zero handling.
+
+    Some other pre-processing options provided by the R command can be performed with:
+
+    To aggregate data at a given taxonomic level (``tax_level="Family"``):
+
+    .. code-block:: python
+
+       table = table.T.groupby(feature_to_family_dict).sum().T
+
+    To discard features with prevalence < 10% among samples (``prv_cut=0.1``):
+
+    .. code-block:: python
+
+       table = table.loc[:, (table > 0).mean() >= 0.1]
+
+    To discard samples with a total abundance < 1 million (``lib_cut=1e6``):
+
+    .. code-block:: python
+
+       table = table.loc[table.sum(axis=1) >= 1e6]
+
+    Categorical columns in metadata are sorted alphabetically, and the reference level
+    for each column is automatically set to be the first category. If this behavior is
+    not intended, you will need to change the order manually, like:
+
+    .. code-block:: python
+
+       metadata['bmi'] = pd.Categorical(
+           metadata['bmi'], categories=['lean', 'overweight', 'obese'], ordered=True)
+
     References
     ----------
     .. [1] Lin, H. and Peddada, S.D., 2020. Analysis of compositions of microbiomes
@@ -443,9 +492,9 @@ def ancombc2(
     >>> from skbio.stats.composition import ancombc2, struc_zero
     >>> import pandas as pd
 
-    Consider a microbiome-like dataset with 15 samples and eight features. The counts
-    are sparse and right-skewed. Samples belong to three disease-status groups, while
-    age is included as a potential confounder.
+    Consider a dataset with 15 samples and eight features. The counts are sparse and
+    skewed. Samples belong to three disease-status groups, while age is included as a
+    potential confounder.
 
     >>> samples = [f"S{i}" for i in range(1, 16)]
     >>> features = [f"F{i}" for i in range(1, 9)]
@@ -471,18 +520,68 @@ def ancombc2(
     >>> age = [25, 48, 23, 35, 52, 51, 18, 29, 40, 29, 44, 39, 26, 37, 46]
     >>> metadata = pd.DataFrame({"status": status, "age": age}, index=samples)
 
+    **Pre-processing**
+
+    Before start, refer to the documentation of :func:`ancombc` on data pre-processing,
+    such as filtering samples by total abundance, filtering features by prevalence, and
+    defining the reference level of a categorical column in the metadata.
+
+    There are two differences from ``ancombc``: First, a ``pseudocount`` parameter is
+    present in ``ancombc2``, defaulting to zero. There is no need to add a pseudocount
+    to the data table prior to the analysis.
+
+    Second, an ``aggregator`` parameter automates data aggregation within the function
+    call. Aggregating data manually before the analysis will produce different output.
+    This is because ``ancombc2`` estimates initial model parameters on raw data before
+    it aggregates them for final parameter estimation.
+
     **Primary analysis**
 
     Fit disease status while adjusting for age. Specifying ``grouping="status"`` also
-    enables post-hoc analyses for this factor. The alphabetically first level, ``mild``,
-    serves as the reference group.
+    enables post-hoc analyses for this factor. The alphabetically first level ``mild``
+    serves as the reference group. When done, display the primary result table.
 
-    >>> res = ancombc2(
-    ...     table, metadata, formula="status + age", grouping="status"
-    ... )
+    >>> res = ancombc2(table, metadata, formula="status + age", grouping="status")
+    >>> res_main = res.result
+    >>> res_main.round(3)
+                                Log(FC)     SE      W  pvalue  qvalue  Signif
+    FeatureID Covariate
+    F1      Intercept             0.329  0.788  0.417   0.687   1.000   False
+            status[T.moderate]   -0.130  0.428 -0.305   0.768   1.000   False
+            status[T.severe]      0.450  0.446  1.010   0.342   1.000   False
+            age                  -0.004  0.021 -0.193   0.852   1.000   False
+    F2      Intercept            -0.097  0.514 -0.189   0.854   1.000   False
+            status[T.moderate]    1.578  0.287  5.503   0.000   0.001    True
+            status[T.severe]      1.880  0.300  6.272   0.000   0.000    True
+            age                  -0.024  0.014 -1.794   0.100   0.703   False
+    F3      Intercept             0.068  0.494  0.137   0.894   1.000   False
+            status[T.moderate]   -0.054  0.271 -0.200   0.845   1.000   False
+            status[T.severe]     -0.004  0.297 -0.014   0.989   1.000   False
+            age                   0.004  0.014  0.248   0.809   1.000   False
+    F4      Intercept            -0.990  0.781 -1.268   0.294   1.000   False
+            status[T.moderate]    0.933  0.427  2.186   0.117   0.817   False
+            status[T.severe]      0.600  0.516  1.164   0.329   1.000   False
+            age                   0.021  0.026  0.814   0.475   1.000   False
+    F5      Intercept             2.376  0.663  3.586   0.009   0.071   False
+            status[T.moderate]    0.069  0.388  0.178   0.864   1.000   False
+            status[T.severe]     -0.448  0.467 -0.960   0.369   1.000   False
+            age                  -0.060  0.022 -2.798   0.027   0.213   False
+    F6      Intercept             1.117  0.522  2.141   0.058   0.406   False
+            status[T.moderate]   -0.075  0.283 -0.264   0.797   1.000   False
+            status[T.severe]     -1.729  0.343 -5.042   0.001   0.004    True
+            age                  -0.012  0.016 -0.729   0.483   1.000   False
+    F7      Intercept             0.834  0.787  1.060   0.349   1.000   False
+            status[T.moderate]    0.348  0.440  0.791   0.473   1.000   False
+            status[T.severe]      0.000  0.516  0.000   1.000   1.000   False
+            age                  -0.025  0.026 -0.957   0.393   1.000   False
+    F8      Intercept             0.775  0.714  1.084   0.306   1.000   False
+            status[T.moderate]    0.028  0.411  0.069   0.947   1.000   False
+            status[T.severe]     -0.530  0.444 -1.193   0.263   1.000   False
+            age                  -0.013  0.021 -0.609   0.558   1.000   False
 
-    ``ANCOMBCResult`` behaves like its primary result table for display and column
-    selection. Here we display only significant feature-covariate pairs:
+    ``res`` is an instance of :class:`ANCOMBCResult`. It behaves like its primary
+    result table ``res.result`` for display and column selection. Here we display only
+    significant feature-covariate pairs:
 
     >>> res[res["Signif"]].round(3)
                                   Log(FC)     SE      W  pvalue  qvalue  Signif
@@ -491,10 +590,9 @@ def ancombc2(
               status[T.severe]      1.880  0.300  6.272   0.000   0.000    True
     F6        status[T.severe]     -1.729  0.343 -5.042   0.001   0.004    True
 
-    ``Log(FC)`` is the estimated coefficient on the natural-log scale. Therefore, F2 is
+    ``Log(FC)`` is the estimated coefficient on the natural-log scale. As shown, F2 is
     more abundant in both moderate and severe samples than in mild samples after
-    adjusting for age, while F6 is less abundant in severe samples. The full pandas
-    DataFrame is available as ``res.result``.
+    adjusting for age, while F6 is less abundant in severe samples.
 
     **Global test**
 
@@ -514,21 +612,12 @@ def ancombc2(
     F7          0.865   0.975   1.000   False
     F8          1.589   0.513   1.000   False
 
-    This identifies F2 and F6 as globally differentially abundant. F7 is absent from
-    every severe sample but remains present in two status levels, so the ordinary R-like
-    fit remains available. Its complete absence in severe samples is nevertheless
-    important presence/absence information captured by the structural-zero analysis:
-
-    >>> struc_zero(table, metadata, "status").loc["F7"]
-    mild        False
-    moderate    False
-    severe       True
-    Name: F7, dtype: bool
+    This identifies F2 and F6 as globally differentially abundant.
 
     **Pairwise test**
 
     The pairwise test compares every pair of status groups. In addition to the two
-    comparisons against the reference group, it can directly compare severe with
+    comparisons against the reference group (mild), it directly compares severe with
     moderate samples.
 
     >>> res_pair = res.pairwise_test()
@@ -547,7 +636,7 @@ def ancombc2(
     **Dunnett's test**
 
     Dunnett's test is useful when the scientific question specifically concerns each
-    group versus a reference group. It therefore omits the severe-versus-moderate
+    group versus a reference group (mild). It therefore omits the severe-vs-moderate
     comparison. A seed is supplied because the procedure uses bootstrapping.
 
     >>> res_dunn = res.dunnett_test(seed=42)
@@ -560,7 +649,7 @@ def ancombc2(
 
     **Trend test**
 
-    Finally, the status labels have a natural mild-to-moderate-to-severe ordering. The
+    Finally, the status column has a natural mild-to-moderate-to-severe ordering. The
     trend test evaluates ordered patterns in group effects. Here this ordering also
     matches the factor level order used by the fitted model.
 
@@ -580,41 +669,79 @@ def ancombc2(
     The trend test again identifies F2 and F6, consistent with their increasing and
     decreasing abundance patterns across disease severity, respectively.
 
-    **Pseudo-count sensitivity analysis**
+    **Structural zero test**
 
-    The choice of pseudo-count can affect differential abundance results. A simple
-    sensitivity analysis is to repeat the complete analysis using pseudo-counts 0, 0.1,
-    0.5, and 1. A result passes when its significance decision is unchanged across all
-    four analyses, and is robust when the baseline result is significant and passes the
-    sensitivity analysis. This corresponds to the procedure used by ANCOMBC 2.10.1 and
-    later. Earlier versions added alternative pseudo-counts after bias correction; since
-    2.10.1, each pseudo-count is added before bias correction and the full analysis is
-    rerun.
+    The structural zero test supplied by the standalone function :func:`struc_zero`
+    identifies features that are systematically absent from certain sample groups. As
+    we may notice, F7 is absent from every severe sample but remains present in the
+    mild and moderate groups. This information can be captured by the structural zero
+    test:
 
-    The analysis can be composed directly from repeated calls:
+    >>> struc_zero(table, metadata, "status").loc["F7"]
+    mild        False
+    moderate    False
+    severe       True
+    Name: F7, dtype: bool
 
-    >>> fits = [
-    ...     ancombc2(
-    ...         table, metadata, formula='status + age', grouping='status',
-    ...         pseudocount=p)
-    ...     for p in (0, 0.1, 0.5, 1)
-    ... ]
-    >>> def sensitivity(results):
-    ...     result = results[0].copy()
-    ...     signif = pd.concat([x['Signif'] for x in results], axis=1)
-    ...     result['Pass'] = signif.eq(signif.iloc[:, 0], axis=0).all(axis=1)
-    ...     result['Robust'] = result['Signif'] & result['Pass']
-    ...     return result
-    >>> res_sens = sensitivity([fit.result for fit in fits])
+    Refer to the documentation of :func:`ancombc` on updating test results with
+    identified structural zeros.
 
-    The same helper can be applied to :meth:`ANCOMBCResult.global_test`,
-    :meth:`ANCOMBCResult.pairwise_test`, or :meth:`ANCOMBCResult.dunnett_test`. For
-    :meth:`ANCOMBCResult.trend_test`, the R implementation uses the global-test
-    sensitivity decision rather than repeating the stochastic trend test at each
-    pseudo-count. The same general approach can also be used with :func:`ancombc` and
-    other analyses involving pseudo-counts. Because :func:`ancombc` requires strictly
-    positive input and has no ``pseudocount`` parameter, add the desired positive
-    pseudo-count to the input table before each fit.
+    **Pseudocount sensitivity analysis**
+
+    The choice of pseudocount can affect differential abundance results. A sensitivity
+    analysis repeats the complete analysis using multiple pseudocounts. A result is
+    considered "pass" when its significance decision is identical across all analyses,
+    and is marked as "robust" when it is consistently significant.
+
+    .. note::
+        This approach corresponds to the procedure used by ANCOMBC 2.10.1 and later.
+        Earlier versions added alternative pseudocounts after bias correction. Since
+        2.10.1, each pseudocount is added before bias correction and the full analysis
+        is repeated.
+
+    In addition to the default analysis (with the default ``pseudocount=0``), run the
+    analysis on three pseudocounts: 0.1, 0.5 and 1.0, following the ANCOMBC package:
+
+    >>> fits = [ancombc2(table, metadata, formula='status + age', grouping='status',
+    ...         pseudocount=p) for p in (0.1, 0.5, 1)]
+    >>> signif = pd.concat([x.result["Signif"] for x in fits], axis=1)
+
+    Compare with the default analysis and append the output to the primary results:
+
+    >>> res_main["Pass"] = signif.eq(res_main["Signif"], axis=0).all(axis=1)
+    >>> res_main["Robust"] = res_main["Signif"] & res_main["Pass"]
+
+    The result reveals that none of the three initially significant feature-covariate
+    associations is robust to the tested pseudocounts. Thus, they should be interpreted
+    cautiously rather than as supported conclusions.
+
+    >>> res_main.query("Robust == True").shape[0]
+    0
+
+    The same approach can be applied to global test, pairwise test and Dunnett's test.
+
+    .. note::
+        For trend test, the ANCOMBC package uses the global test sensitivity decision
+        rather than repeating the stochastic trend test at each pseudocount.
+
+    More broadly, the sensitivity analysis can also be used with :func:`ancombc` and
+    other analyses involving pseudocounts.
+
+    Sensitivity analysis can substantially reduce the number of significant results and
+    thereby lower the risk of pseudocount-driven false positives, but this conservatism
+    may reduce power and yield fewer significant results. The ANCOM-BC2 authors
+    strongly recommend incorporating sensitivity analysis into the final assessment of
+    taxon significance, unless maximizing power is the primary goal.
+
+    **Variance regularization**
+
+    Another mechanism for reducing the risk of false positives is the ``var_quantile``
+    parameter (corresponding to the R package's ``s0_perc`` parameter), which adds the
+    selected quantile (default: 0.05) of coefficient variances to the variance before
+    inference. This helps reducing spurious significance caused by extremely small
+    standard errors, especially for rare features. Larger values generally make the
+    analysis more conservative and can further reduce false positives, but may also
+    reduce statistical power.
 
     """
     return _ancombc_core(

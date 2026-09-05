@@ -404,8 +404,9 @@ def ancombc2(
         array of aggregate ID per feature in table order. By default, no aggregation
         is performed.
     var_quantile : float, optional
-        Quantile of coefficient variances used to calculate a variance-stabilizing
-        offset. Must be between 0 and 1. Set to 0 to disable. Default is 0.05.
+        Quantile of coefficient variances used as a regularization factor to reduce
+        spurious significance from extremely small standard errors, particularly for
+        rare features. Must be between 0 and 1. Set to 0 to disable. Default is 0.05.
     max_iter : int, optional
         Maximum number of iterations for the bias estimation process. Default is 100.
     tol : float, optional
@@ -763,7 +764,7 @@ def _ancombc_core(
     if not v2:
         # Correct coefficients (logFC) according to estimated bias.
         beta_hat = beta.T - delta_em
-        final_estimable = estimable
+        estimable = estimable
 
         # Skip degree of freedom calculation.
         dof = None
@@ -792,7 +793,7 @@ def _ancombc_core(
         # Re-estimate parameters.
         # Since this is the final fit, retain the grouping covariance submatrix if
         # requested.
-        var_hat, beta_hat, _, vcov_hat, final_estimable, rank = _estimate_params(
+        var_hat, beta_hat, _, vcov_hat, estimable, rank = _estimate_params(
             data,
             dmat,
             groups,
@@ -805,8 +806,8 @@ def _ancombc_core(
             estimate_theta=rank_mode != "r",
         )
         beta_hat = beta_hat.T
-        if final_estimable is not None and np.all(final_estimable):
-            final_estimable = None
+        if estimable is not None and np.all(estimable):
+            estimable = None
 
         # Adjust variances
         _adjust_variances(var_hat, vcov_hat, var_delta, var_quantile, groups)
@@ -825,9 +826,10 @@ def _ancombc_core(
 
     # Calculate statistics
     # TODO: Don't copy beta_hat and var_hat if not needed, especially when post-hoc
-    # is disabled
+    # is disabled. Also confirm any post-hoc doesn't mute them, such that they don't
+    # need a copy in any circumstance.
     lfc, se, W, pval, qval, reject = _calc_statistics(
-        beta_hat, var_hat, alpha, p_adjust, dof, final_estimable
+        beta_hat, var_hat, alpha, p_adjust, dof, estimable
     )
 
     # Output primary results
@@ -863,7 +865,7 @@ def _ancombc_core(
         _covariates=covars,
         _p_adjust=p_adjust,
         _alpha=alpha,
-        _estimable=final_estimable,
+        _estimable=estimable,
     )
 
 
@@ -926,6 +928,7 @@ def _transform_data(data, pseudo=None, center=False):
     # Cast data into float64 (default, including integer input) or float32 (float input
     # <= 32 bit).
     # NOTE: NumPy linear algebra does not support float16.
+    # TODO: Consider having a utility function of this.
     dtype = data.dtype
     if (
         np.issubdtype(dtype, np.floating)

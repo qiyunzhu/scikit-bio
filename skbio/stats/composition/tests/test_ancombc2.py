@@ -1394,7 +1394,9 @@ class Ancombc2Tests(TestCase):
 
     def test_ancombc2(self):
         # ancom-bc2 results of test dataset
-        res = ancombc2(self.table, self.grouping.to_frame(), "grouping")
+        table, grouping = self.table, self.grouping.to_frame()
+
+        res = ancombc2(table, grouping, "grouping")
         self.assertEqual(res._method, "ANCOM-BC2")
         self.assertIsInstance(res._dmat, DesignMatrix)
         self.assertEqual(res._dmat.design_info.column_names, ["Intercept", "grouping[T.treatment]"])
@@ -1405,21 +1407,11 @@ class Ancombc2Tests(TestCase):
         # A two-level factor is valid in the primary model but cannot be selected as
         # the post-hoc grouping, which requires at least three observed groups.
         with self.assertRaisesRegex(ValueError, "at least three observed groups"):
-            ancombc2(
-                self.table,
-                self.grouping.to_frame(),
-                "grouping",
-                grouping="grouping",
-            )
+            ancombc2(table, grouping, "grouping", grouping="grouping")
 
         for var_quantile in (-0.1, 1.1):
             with self.assertRaisesRegex(ValueError, "`var_quantile`"):
-                ancombc2(
-                    self.table,
-                    self.grouping.to_frame(),
-                    "grouping",
-                    var_quantile=var_quantile,
-                )
+                ancombc2(table, grouping, "grouping", var_quantile=var_quantile)
 
         obs = res.result["Signif"].to_numpy()
 

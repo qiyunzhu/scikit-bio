@@ -30,6 +30,7 @@ from skbio.stats.composition._ancombc2 import (
     _calc_variance,
     _calc_covariance,
     _calc_var_cov,
+    _adjust_variance,
     _transform_data,
     _validate_grouping,
     _estimate_bias_em,
@@ -585,6 +586,33 @@ class CoreTests(TestCase):
         npt.assert_allclose(obs_var, exp_var)
         npt.assert_allclose(obs_cov, exp_cov)
         self.assertTrue(obs_var.flags.f_contiguous)
+
+    def test_adjust_variance(self):
+        var_hat = np.array([[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]])
+        vcov_hat = np.full((2, 2, 2), -1.0)
+        var_delta = np.array([0.25, 1.0, 4.0])
+        groups = np.array([2, 0])
+
+        _adjust_variance(var_hat, vcov_hat, var_delta.copy(), 0.5, groups)
+
+        exp_var = np.array([[13.5, 31.5, 69.5], [31.5, 58.5, 108.5]])
+        exp_cov = np.array(
+            [[[69.5, -1.0], [-1.0, 13.5]], [[108.5, -1.0], [-1.0, 31.5]]]
+        )
+        npt.assert_allclose(var_hat, exp_var)
+        npt.assert_allclose(vcov_hat, exp_cov)
+
+        # A zero quantile disables the variance-stabilizing offset.
+        var_hat = np.array([[1.0, 4.0, 9.0], [16.0, 25.0, 36.0]])
+        _adjust_variance(var_hat, None, var_delta.copy(), 0)
+        exp_var = np.array([[2.25, 9.0, 25.0], [20.25, 36.0, 64.0]])
+        npt.assert_allclose(var_hat, exp_var)
+
+        # Missing variances are excluded from the quantile offset.
+        var_hat = np.array([[1.0, np.nan, 9.0], [16.0, 25.0, 36.0]])
+        _adjust_variance(var_hat, None, var_delta.copy(), 0.5)
+        exp_var = np.array([[13.5, np.nan, 69.5], [31.5, 72.0, 108.5]])
+        npt.assert_allclose(var_hat, exp_var, equal_nan=True)
 
     def test_calc_residual(self):
         data = np.arange(20, dtype=float).reshape(4, 5)

@@ -810,7 +810,7 @@ def _ancombc_core(
             estimable = None
 
         # Adjust variances
-        _adjust_variances(var_hat, vcov_hat, var_delta, var_quantile, groups)
+        _adjust_variance(var_hat, vcov_hat, var_delta, var_quantile, groups)
 
         # Compute per-feature degree of freedom (observed samples - covariates)
         if missing is not None:
@@ -2500,7 +2500,7 @@ def _sample_fractions(
     return theta_hat
 
 
-def _adjust_variances(var_hat, vcov_hat, var_delta, var_quantile, groups=None):
+def _adjust_variance(var_hat, vcov_hat, var_delta, var_quantile, groups=None):
     """Adjust variances.
 
     Parameters
@@ -2521,31 +2521,39 @@ def _adjust_variances(var_hat, vcov_hat, var_delta, var_quantile, groups=None):
 
     Notes
     -----
-    This function updates ``var_hat`` in place and, when provided, updates the diagonal
-    of ``vcov_hat`` to remain consistent.
+    This function updates `var_hat` and `vcov_hat` (if provided) in place.
 
     """
-    # vars += delta + 2 * |vars * delta|^0.5
+    # var = var + delta + 2 * |var * delta|^0.5
     var_delta_t = var_delta[None, :]
     var_prod = var_hat * var_delta_t
-    np.abs(var_prod, out=var_prod)
+    # var and delta are both non-negative so this is not needed
+    # np.abs(var_prod, out=var_prod)
     np.sqrt(var_prod, out=var_prod)
     var_prod *= 2.0
     var_hat += var_delta_t
     var_hat += var_prod
 
+    # TODO: Simplified math: var = (var^0.5 + delta^0.5)^2; avoid allocating `var_prod`
+    # np.sqrt(var_hat, out=var_hat)
+    # np.sqrt(var_delta, out=var_delta)
+    # var_hat += var_delta[None, :]
+    # np.square(var_hat, out=var_hat)
+
     # Add a variance-stabilizing offset based on the requested quantile.
     if var_quantile:
+        # TODO: `var_delta` can be reused to replace `var_offset`
         var_offset = np.nanquantile(var_hat, var_quantile, axis=0)
         var_hat += var_offset[None, :]
-        # var_hat[np.isnan(beta_hat)] = np.nan
 
     # Keep a retained covariance tensor consistent with the adjusted variances.
     if vcov_hat is not None:
         if groups is None:
-            groups = np.arange(var_hat.shape[1])
-        diag_idx = np.arange(groups.size)
-        vcov_hat[:, diag_idx, diag_idx] = var_hat[:, groups]
+            diag = np.arange(var_hat.shape[1])
+            vcov_hat[:, diag, diag] = var_hat
+        else:
+            diag = np.arange(groups.size)
+            vcov_hat[:, diag, diag] = var_hat[:, groups]
 
 
 def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=None):

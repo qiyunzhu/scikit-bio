@@ -34,7 +34,6 @@ from skbio.stats.composition._ancombc2 import (
     _validate_grouping,
     _estimate_bias_em,
     _sample_fractions,
-    _format_results,
     _calc_statistics,
     _calc_pvalues,
     _adjust_pvalues,
@@ -997,8 +996,6 @@ class CoreTests(TestCase):
         for i in range(2):
             bias[i] = _estimate_bias_em(beta[i], var_hat[:, i], max_iter=1)
         delta_em = bias[:, 0]
-        # beta_hat = beta.T - delta_em
-
         obs = _sample_fractions(data, dmat, beta, delta_em)
         exp = np.array(
             [2.43809627, 2.42448053, 2.08291958, 2.36465192, 2.40607366, 2.42865545]
@@ -1011,41 +1008,41 @@ class CoreTests(TestCase):
         var_hat, beta, _, _ = _estimate_params_dense(data, dmat)
         bias = np.empty((2, 3))
         for i in range(2):
-            res = _estimate_bias_em(beta[i], var_hat[:, i], max_iter=1)
-            bias[i] = res
+            bias[i] = _estimate_bias_em(beta[i], var_hat[:, i], max_iter=1)
         delta_em = bias[:, 0]
         beta_hat = beta.T - delta_em
 
         obs = _calc_statistics(beta_hat, var_hat, 0.05, "holm")
 
-        exp_se_hat = np.array([[0.03349832, 0.38489241],
-                               [0.01784618, 0.09653226],
-                               [0.086538  , 0.12040718],
-                               [0.01530208, 0.11952252],
-                               [0.06485124, 0.11491594],
-                               [0.01530208, 0.07187641],
-                               [0.01530208, 0.07062619]])
-        exp_W = np.array([[ 2.14805775e+01, -3.06882664e+00],
-                          [ 3.95639779e+01, -5.55591315e+00],
-                          [ 8.05617300e-01,  5.70547350e-01],
-                          [-1.24061800e-01,  9.50716360e-01],
-                          [ 1.21029210e+00,  3.69040700e-02],
-                          [-1.24061800e-01, -1.63359659e+00],
-                          [-1.24061800e-01,  7.48421510e-01]])
-        exp_pval = np.array([[2.36547636e-102, 2.14901260e-003],
-                             [0.00000000e+000, 2.76164163e-008],
-                             [4.20463527e-001, 5.68306514e-001],
-                             [9.01266346e-001, 3.41748381e-001],
-                             [2.26166816e-001, 9.70561497e-001],
-                             [9.01266346e-001, 1.02343585e-001],
-                             [9.01266346e-001, 4.54205953e-001]])
-        exp_qval = np.array([[1.41928582e-101, 1.28940756e-002],
-                             [0.00000000e+000, 1.93314914e-007],
-                             [1.00000000e+000, 1.00000000e+000],
-                             [1.00000000e+000, 1.00000000e+000],
-                             [1.00000000e+000, 1.00000000e+000],
-                             [1.00000000e+000, 5.11717926e-001],
-                             [1.00000000e+000, 1.00000000e+000]])
+        exp_lfc = beta_hat
+        exp_se = np.array([[0.03349832, 0.38489241],
+                           [0.01784618, 0.09653226],
+                           [0.086538  , 0.12040718],
+                           [0.01530208, 0.11952252],
+                           [0.06485124, 0.11491594],
+                           [0.01530208, 0.07187641],
+                           [0.01530208, 0.07062619]])
+        exp_W = np.array([[ 21.4805775, -3.06882664],
+                          [ 39.5639779, -5.55591315],
+                          [  0.8056173,  0.57054735],
+                          [ -0.1240618,  0.95071636],
+                          [  1.2102921,  0.03690407],
+                          [ -0.1240618, -1.63359659],
+                          [ -0.1240618,  0.74842151]])
+        exp_pval = np.array([[2.37e-102, 0.002149 ],
+                             [0.       , 2.7616e-8],
+                             [0.4204635, 0.5683065],
+                             [0.9012663, 0.3417484],
+                             [0.2261668, 0.9705615],
+                             [0.9012663, 0.1023436],
+                             [0.9012663, 0.454206 ]])
+        exp_qval = np.array([[1.4e-101, 1.289e-2],
+                             [0.      , 1.933e-7],
+                             [1.      , 1.      ],
+                             [1.      , 1.      ],
+                             [1.      , 1.      ],
+                             [1.      , 0.511718],
+                             [1.      , 1.      ]])
         exp_reject = np.array([[ True,  True],
                                [ True,  True],
                                [False, False],
@@ -1054,63 +1051,46 @@ class CoreTests(TestCase):
                                [False, False],
                                [False, False]])
 
-        npt.assert_allclose(obs[0], exp_se_hat, atol=1e-5)
-        npt.assert_allclose(obs[1], exp_W, atol=1e-3)
-        npt.assert_allclose(obs[2], exp_pval, atol=1e-5)
-        npt.assert_allclose(obs[3], exp_qval, atol=1e-5)
-        npt.assert_array_equal(obs[4], exp_reject)
+        npt.assert_allclose(obs[0], exp_lfc)
+        npt.assert_allclose(obs[1], exp_se, atol=1e-5)
+        npt.assert_allclose(obs[2], exp_W, atol=1e-5)
+        npt.assert_allclose(obs[3], exp_pval, atol=1e-5)
+        npt.assert_allclose(obs[4], exp_qval, atol=1e-5)
+        npt.assert_array_equal(obs[5], exp_reject)
 
-        # The memory-efficient DataFrame path should contain the same statistics in the
-        # same feature-major / covariate-minor order.
-        observed = _format_results(
-            beta_hat,
-            var_hat,
-            self.table2.columns,
-            ["Intercept", "group[T.treatment]"],
-            0.05,
-            "holm",
-        )
-        self.assertListEqual(
-            list(observed.columns),
-            ["Log(FC)", "SE", "W", "pvalue", "qvalue", "Signif"],
-        )
-        self.assertListEqual(
-            observed.index.names, ["FeatureID", "Covariate"]
-        )
-        npt.assert_allclose(
-            observed["Log(FC)"].to_numpy().reshape(beta_hat.shape), beta_hat
-        )
-        npt.assert_allclose(
-            observed["SE"].to_numpy().reshape(beta_hat.shape), exp_se_hat, atol=1e-5
-        )
-        npt.assert_allclose(
-            observed["W"].to_numpy().reshape(beta_hat.shape), exp_W, atol=1e-3
-        )
-        npt.assert_allclose(
-            observed["pvalue"].to_numpy().reshape(beta_hat.shape), exp_pval, atol=1e-5
-        )
-        npt.assert_allclose(
-            observed["qvalue"].to_numpy().reshape(beta_hat.shape), exp_qval, atol=1e-5
-        )
-        npt.assert_array_equal(
-            observed["Signif"].to_numpy().reshape(beta_hat.shape), exp_reject
-        )
-        self.assertEqual(str(observed["Signif"].dtype), "boolean")
-
-    def test_calc_statistics_nan_dof(self):
+        # dof has NaN
         beta_hat = np.array([[1.0, -1.0], [2.0, -2.0]])
         var_hat = np.ones_like(beta_hat)
         dof = np.array([10.0, np.nan])
-
-        pval = _calc_pvalues(beta_hat, dof)
-        npt.assert_array_equal(np.isnan(pval), [[False, False], [True, True]])
-
-        _, _, obs_pval, qval, reject = _calc_statistics(
+        _, _, _, pval, qval, reject = _calc_statistics(
             beta_hat, var_hat, 0.05, "holm", dof
         )
-        npt.assert_array_equal(obs_pval, pval)
-        npt.assert_array_equal(np.isnan(qval), [[False, False], [True, True]])
-        npt.assert_array_equal(reject, [[False, False], [False, False]])
+        exp = [[False, False], [True, True]]
+        npt.assert_array_equal(np.isnan(pval), exp)
+        npt.assert_array_equal(np.isnan(qval), exp)
+        npt.assert_array_equal(reject, np.full((2, 2), False))
+
+    def test_calc_pvalues(self):
+        W = np.array([[0.0, -1.0], [2.0, -3.0]])
+
+        obs = _calc_pvalues(W)
+        exp = np.array([[1.0, 0.3173105], [0.0455003, 0.0026998]])
+        npt.assert_array_equal(obs.round(7), exp)
+
+        dof = np.array([5.0, 10.0])
+        obs = _calc_pvalues(W, dof)
+        exp = np.array([[1.0, 0.3632175], [0.073388, 0.0133437]])
+        npt.assert_array_equal(obs.round(7), exp)
+
+        dof = 5.0
+        obs = _calc_pvalues(W, dof)
+        exp = np.array([[1.0, 0.3632175], [0.1019395, 0.0300992]])
+        npt.assert_array_equal(obs.round(7), exp)
+
+        dof = np.array([5.0, np.nan])
+        obs = _calc_pvalues(W, dof)
+        exp = np.array([[1.0, 0.3632175], [np.nan, np.nan]])
+        npt.assert_array_equal(obs.round(7), exp)
 
     def test_adjust_pvalues_nan(self):
         pval = np.array([[0.01, 0.4], [np.nan, 0.2], [0.2, np.nan]])

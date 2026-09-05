@@ -823,15 +823,30 @@ def _ancombc_core(
             n_samps = matrix.shape[0]
             dof = n_samps - n_covars if n_samps > n_covars else np.nan
 
-    # Output primary results. Compute statistics and populate the DataFrame
-    # incrementally to minimize the number of feature-by-covariate arrays alive at
-    # once. This is more memory-efficient than calculating all statistics first and
-    # constructing the DataFrame from repeated Python label lists.
+    # Calculate statistics
+    # TODO: Don't copy beta_hat and var_hat if not needed, especially when post-hoc
+    # is disabled
+    lfc, se, W, pval, qval, reject = _calc_statistics(
+        beta_hat, var_hat, alpha, p_adjust, dof, final_estimable
+    )
+
+    # Output primary results
+    # TODO: Consider constructing table in ANCOMBCResult.__init__
     if features is None:
         features = np.arange(matrix.shape[1])
-    res = _format_results(
-        beta_hat, var_hat, features, covars, alpha, p_adjust, dof, final_estimable
+    index = pd.MultiIndex.from_product(
+        (features, covars), names=("FeatureID", "Covariate")
     )
+    # NOTE: Some arrays are F-contiguous and copies are made by .ravel()
+    columns = {
+        "Log(FC)": lfc.ravel(),
+        "SE": se.ravel(),
+        "W": W.ravel(),
+        "pvalue": pval.ravel(),
+        "qvalue": qval.ravel(),
+        "Signif": pd.array(reject.ravel(), dtype="boolean"),
+    }
+    res = pd.DataFrame(columns, index=index, copy=False)
 
     method = "ANCOM-BC" if not v2 else "ANCOM-BC2"
 
@@ -908,10 +923,9 @@ def _transform_data(data, pseudo=None, center=False):
     """
     ### Step 1: Identify zero values and/or add pseudocount. ###
 
-    # NumPy linear algebra does not support float16, while keeping float32 input can
-    # materially reduce memory consumption. Use float32 for floating inputs no wider
-    # than float32, and float64 otherwise. Integer input is promoted to float64 to
-    # preserve the historical precision of count-data analysis.
+    # Cast data into float64 (default, including integer input) or float32 (float input
+    # <= 32 bit).
+    # NOTE: NumPy linear algebra does not support float16.
     dtype = data.dtype
     if (
         np.issubdtype(dtype, np.floating)
@@ -2531,16 +2545,8 @@ def _adjust_variances(var_hat, vcov_hat, var_delta, var_quantile, groups=None):
         vcov_hat[:, diag_idx, diag_idx] = var_hat[:, groups]
 
 
-def _format_results(
-    beta_hat, var_hat, features, covariates, alpha, p_adjust, dof=None, estimable=None
-):
-    """Format primary ANCOM-BC/BC2 statistics as a DataFrame.
-
-    This function is specialized for the public result-construction path. Unlike
-    :func:`_calc_statistics`, which returns every intermediate statistic as a NumPy
-    array, this routine inserts each statistic into the DataFrame as soon as it is
-    calculated and then reuses its temporary workspace. This reduces peak memory for
-    large feature-by-covariate result tables.
+def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=None):
+    """Calculate primary statistics, including estimability masking.
 
     Parameters
     ----------
@@ -2548,10 +2554,6 @@ def _format_results(
         Estimated coefficients post correction.
     var_hat : ndarray of shape (n_features, n_covariates)
         Estimated variances.
-    features : 1-D array_like of length n_features
-        Feature identifiers.
-    covariates : 1-D array_like of length n_covariates
-        Covariate identifiers.
     alpha : float
         Significance level.
     p_adjust : str
@@ -2564,86 +2566,9 @@ def _format_results(
 
     Returns
     -------
-    pd.DataFrame
-        Primary results with a (FeatureID, Covariate) MultiIndex and columns
-        Log(FC), SE, W, pvalue, qvalue and Signif.
-
-    """
-    beta_hat = np.asarray(beta_hat)
-    var_hat = np.asarray(var_hat)
-    if beta_hat.shape != var_hat.shape:
-        raise ValueError("`beta_hat` and `var_hat` must have matching shapes.")
-
-    n_feats, n_covars = beta_hat.shape
-    if len(features) != n_feats or len(covariates) != n_covars:
-        raise ValueError(
-            "Feature and covariate identifiers must match the result dimensions."
-        )
-
-    # Construct the MultiIndex directly. This avoids materializing two Python lists
-    # of length n_features * n_covariates before converting them into an index.
-    index = pd.MultiIndex.from_product(
-        (features, covariates), names=("FeatureID", "Covariate")
-    )
-    res = pd.DataFrame(index=index)
-    if estimable is None:
-        res["Log(FC)"] = beta_hat.ravel()
-    else:
-        # Keep arbitrary minimum-norm pseudoinverse coefficients private. Only the
-        # exceptional rank-deficient path needs this temporary display copy.
-        lfc = beta_hat.copy()
-        lfc[~estimable] = np.nan
-        res["Log(FC)"] = lfc.ravel()
-        del lfc
-
-    # A single feature-by-covariate workspace is enough for SE and W because pandas
-    # copies each column on assignment.
-    work = np.sqrt(var_hat)
-    if estimable is not None:
-        work[~estimable] = np.nan
-    res["SE"] = work.ravel()
-    np.divide(beta_hat, work, out=work)
-    res["W"] = work.ravel()
-
-    # scipy.stats allocates the p-value array. Once p-values have been copied into
-    # the DataFrame, reuse that same array for adjusted p-values.
-    np.abs(work, out=work)
-    pval = _calc_pvalues_abs(work, dof)
-    if estimable is not None:
-        # Unidentifiable ordinary coefficients are not evidence for the null; p=1 is a
-        # neutral placeholder that prevents significance and keeps the full testing
-        # family in multiplicity correction. Structural-zero evidence is handled by
-        # the separate ``struc_zero`` analysis.
-        pval[~estimable] = 1.0
-    res["pvalue"] = pval.ravel()
-    del work
-
-    _adjust_pvalues(pval, p_adjust, out=pval)
-    res["qvalue"] = pval.ravel()
-    res["Signif"] = pd.array(pval.ravel() <= alpha, dtype="boolean")
-
-    return res
-
-
-def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None):
-    """Calculate statistical significance while correcting for multiple testing.
-
-    Parameters
-    ----------
-    beta_hat : ndarray of shape (n_features, n_covariates)
-        Estimated coefficients post correction.
-    var_hat : ndarray of shape (n_features, n_covariates)
-        Estimated variances.
-    alpha : float
-        Significance level.
-    p_adjust : str
-        FDR correction method.
-    dof : float or ndarray of shape (n_features,), optional
-        Degrees of freedom.
-
-    Returns
-    -------
-    se_hat : ndarray of shape (n_features, n_covariates)
+    lfc : ndarray of shape (n_features, n_covariates)
+        Estimated coefficients (log(FC)).
+    se : ndarray of shape (n_features, n_covariates)
         Estimated standard errors.
     W : ndarray of shape (n_features, n_covariates)
         Test statistics.
@@ -2654,30 +2579,39 @@ def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None):
     reject : ndarray of shape (n_features, n_covariates)
         Significant differential abundance (reject null hypothesis).
 
+    Notes
+    -----
+    Each returned array has independent storage so it can be passed to pandas with
+    ``copy=False`` without later calculations changing an already constructed column.
     """
-    # Estimate standard error
-    se_hat = np.sqrt(var_hat)
-    # NOTE: Code was below. But I think this is unnecessary: First, var_hat cannot
-    # contain negative values. Second, np.sqrt on NaN values will return NaN without
-    # warning.
-    # se_hat = np.sqrt(np.maximum(var_hat, 0))
-    # se_hat[np.isnan(var_hat)] = np.nan
+    # TODO: Pre-negate estimable
 
-    # Calculate test statistic (W)
-    W = beta_hat / se_hat
-    # NOTE: Original code is below. But I think there is no need to handle NaN here.
-    # W = np.where(np.isnan(se_hat), np.nan, beta_hat / se_hat)
+    # Coefficients (make a copy anyway because post-hoc tests will use `beta_hat`)
+    lfc = beta_hat.copy()
+    if estimable is not None:
+        non_estimable = ~estimable
+        lfc[non_estimable] = np.nan
 
-    # Calculate p-values
+    # Standard error = sqrt(variance)
+    se = np.sqrt(var_hat)
+    if estimable is not None:
+        se[non_estimable] = np.nan
+
+    # Test statistic W = coef / s.e.
+    W = beta_hat / se
+
+    # p-values (calculated by t-test or Z-test)
+    # Non-estimables are set to 1, following R.
     pval = _calc_pvalues(W, dof)
+    if estimable is not None:
+        pval[non_estimable] = 1.0
 
-    # FDR correction of p-values
+    # Adjust p-values
     qval = _adjust_pvalues(pval, p_adjust)
-
-    # Reject null hypothesis
     reject = qval <= alpha
 
-    return se_hat, W, pval, qval, reject
+    return lfc, se, W, pval, qval, reject
+    # return tuple(x.ravel() for x in (lfc, se, W, pval, qval, reject))
 
 
 def _calc_pvalues(W, dof=None):
@@ -2699,11 +2633,7 @@ def _calc_pvalues(W, dof=None):
         p-values.
 
     """
-    return _calc_pvalues_abs(np.abs(W), dof)
-
-
-def _calc_pvalues_abs(W_abs, dof=None):
-    """Calculate two-sided p-values from absolute test statistics."""
+    W_abs = np.abs(W)
     if dof is not None:  # t-test with dof
         if not np.isscalar(dof):
             dof = np.asarray(dof)[:, None]  # broadcast to 2D

@@ -531,6 +531,68 @@ class AdjustPvaluesTests(TestCase):
             _adjust_pvalues(work, method, out=work)
             npt.assert_allclose(work, exp)
 
+    def test_n_tests(self):
+        from statsmodels.stats.multitest import multipletests
+
+        pval = np.array([[0.01, 0.4, np.nan], [0.04, np.nan, np.nan],
+                         [0.2, 0.01, np.nan]])
+        original = pval.copy()
+        for method, sm_method in (("bonf", "bonferroni"), ("holm", "holm"),
+                                  ("bh", "fdr_bh"), ("by", "fdr_by"),
+                                  ("sidak", "sidak"), ("hommel", "hommel")):
+            for axis in (0, 1, None):
+                for n_tests in (5, 10):
+                    exp = np.full_like(pval, np.nan)
+                    if axis is None:
+                        families = [(pval.ravel(), exp.reshape(-1))]
+                    else:
+                        families = zip(np.moveaxis(pval, axis, -1),
+                                       np.moveaxis(exp, axis, -1))
+                    for col, dest in families:
+                        valid = ~np.isnan(col)
+                        n = valid.sum()
+                        if n:
+                            padded = np.pad(col[valid], (0, n_tests - n),
+                                            constant_values=1.)
+                            dest[valid] = multipletests(padded, method=sm_method)[1][:n]
+                    obs = _adjust_pvalues(pval, method, axis=axis, n_tests=n_tests)
+                    npt.assert_allclose(obs, exp, rtol=1e-14, atol=0)
+                    work = pval.copy()
+                    self.assertIs(_adjust_pvalues(
+                        work, method, axis=axis, n_tests=n_tests, out=work), work)
+                    npt.assert_allclose(work, exp, rtol=1e-14, atol=0)
+        npt.assert_array_equal(pval, original)
+
+    def test_n_tests_counts_and_clipping(self):
+        pval = np.array([np.nan, 0.01, np.nan, 0.04, np.nan])
+        for method in ("bonf", "holm", "bh", "by", "sidak"):
+            # The specified count need only cover nonmissing entries.
+            obs = _adjust_pvalues(pval, method, n_tests=2)
+            npt.assert_allclose(obs, _adjust_pvalues(pval, method), rtol=1e-14)
+            obs = _adjust_pvalues(np.array([0.6, 0.8]), method, n_tests=5)
+            if method != "sidak":
+                npt.assert_array_equal(obs, [1., 1.])
+            obs = _adjust_pvalues(np.array([np.nan, np.nan]), method, n_tests=0)
+            npt.assert_array_equal(obs, [np.nan, np.nan])
+            npt.assert_array_equal(_adjust_pvalues(np.array([]), method, n_tests=5), [])
+        npt.assert_array_equal(_adjust_pvalues(pval, None, n_tests=10), pval)
+        npt.assert_allclose(_adjust_pvalues(np.array([0.04]), "by", n_tests=1), [0.04])
+
+    def test_n_tests_large(self):
+        # Native methods must not allocate arrays proportional to n_tests.
+        n_tests = 10**12
+        pval = np.array([0.01, 0.02, 0.03]) / n_tests
+        harmonic = np.log(n_tests) + np.euler_gamma + 0.5 / n_tests
+        expected = {
+            "bonf": [0.01, 0.02, 0.03],
+            "holm": pval * (n_tests - np.arange(3)),
+            "bh": np.full(3, 0.01),
+            "by": np.full(3, 0.01 * harmonic),
+        }
+        for method, exp in expected.items():
+            npt.assert_allclose(_adjust_pvalues(pval, method, n_tests=n_tests),
+                                exp, rtol=1e-14, atol=0)
+
     def test_fallback(self):
         from statsmodels.stats.multitest import multipletests
 

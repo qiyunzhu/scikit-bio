@@ -43,6 +43,7 @@ from skbio.stats.composition._ancombc2 import (
     _constrain_est,
     _constrain_est_identity,
     _mdfdr_dunnett,
+    _mdfdr_pairwise,
     _ancombc_core,
     struc_zero,
     ancombc,
@@ -1854,6 +1855,35 @@ class PostHocTests(TestCase):
         npt.assert_allclose(obs_pval[0], exp_pval)
         npt.assert_array_equal(obs_pval[1:], 1.0)
         npt.assert_allclose(obs_qval, exp_qval)
+
+    def test_mdfdr_inflated_families(self):
+        from statsmodels.stats.multitest import multipletests
+
+        W = np.array([[4., 2.], [3., 1.], [1., 2.]])
+        for selected in ([True, False, False], [True, True, False],
+                         [True, True, True], [False, False, False]):
+            selected = np.array(selected)
+            for method, sm_method in (("holm", "holm"), ("bh", "fdr_bh"),
+                                      ("bonf", "bonferroni"), ("by", "fdr_by"),
+                                      ("sidak", "sidak")):
+                with patch("skbio.stats.composition._ancombc2._global_test",
+                           return_value=(None, None, None, selected)):
+                    pair = _mdfdr_pairwise(
+                        W, 10., method, None, None, None, None, 0.05)
+                with patch("skbio.stats.composition._ancombc2._dunn_global",
+                           return_value=pd.DataFrame({"reject": selected})):
+                    dunn = _mdfdr_dunnett(
+                        W, 10., method, 1, 0.05, np.random.default_rng(0))
+                for pval, qval in (pair, dunn):
+                    exp = np.ones_like(W)
+                    if selected.any():
+                        n_tests = W.shape[1] * W.shape[0] // selected.sum()
+                        for i, col in enumerate(pval):
+                            padded = np.pad(col, (0, n_tests - col.size),
+                                            constant_values=1.)
+                            exp[i] = multipletests(padded, method=sm_method)[1][:2]
+                    npt.assert_allclose(qval, exp, rtol=1e-14, atol=0)
+                    npt.assert_array_equal(pval[~selected], 1.)
 
     # def test_global_test(self):
     #     table = pd.read_csv(

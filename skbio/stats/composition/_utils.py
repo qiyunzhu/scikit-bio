@@ -166,7 +166,7 @@ def _check_p_adjust(name):
     return func
 
 
-def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
+def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
     """Perform multiple testing correction of p-values.
 
     Parameters
@@ -183,6 +183,11 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
         Axis along which correction will be performed. Each vector on this axis is
         considered as an independent family of p-values. Default is 0. If None, the
         entire array is treated as one family.
+    n_tests : int, optional
+        Total number of hypotheses in each family, including unobserved tests.
+        Must be at least the non-NaN count of every family. If None, use each
+        family's non-NaN count. Unobserved tests behave as p-values of one.
+        Ignored when no correction is requested.
     out : ndarray of float, optional
         Location to store the result. Must have the same shape and data type as `pval`.
         Can be `pval` itself for in-place correction. If not provided, a new array will
@@ -211,6 +216,10 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
     parameters and p-values. When falling back to `multipletests`, only non-NaN p-values
     are passed to it, ensuring consistent behavior.
 
+    With explicit `n_tests`, the native methods account for unobserved tests
+    without padding. BY uses H_n = digamma(n + 1) + Euler's constant, avoiding
+    a rank array of length `n_tests`. Fallback methods pad with ones.
+
     """
     # As a future optimization path, batch calculation may be more efficient than
     # per-family iteration. However, because the number of covariates is usually small
@@ -231,8 +240,8 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
     if out is None:
         out = np.empty_like(pval, dtype=dtype)
 
-    # No correction; just return input
-    if method is None:
+    # No correction, or an empty testing family; just return input.
+    if method is None or n_tests == 0:
         if out is not pval:
             out[...] = pval
         return out
@@ -242,6 +251,7 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
         return out
 
     size = pval.size if axis is None else pval.shape[axis]
+    total = size if n_tests is None else n_tests
 
     # Determine built-in method, or fallback to statsmodels
     key = method.lower()
@@ -250,12 +260,17 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
     bh = key in ("bh", "benjamini-hochberg")
     by = key in ("by", "benjamini-yekutieli")
     if holm:
-        factors = np.arange(size, 0, -1, dtype=float)
+        factors = total - np.arange(size, dtype=float)
     elif bh or by:
         rank = np.arange(1, size + 1, dtype=float)
-        factors = rank / size
+        factors = rank / total
         if by:
-            harmonic = np.cumsum(1 / rank)
+            if n_tests is None:
+                harmonic = np.cumsum(1 / rank)
+            else:
+                from scipy.special import digamma
+
+                harmonic = digamma(n_tests + 1) + np.euler_gamma
     elif not bonf:
         func = _check_p_adjust(method)
 
@@ -280,25 +295,32 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
             values, result = col, dest
 
         # Per-method calculation
+        n = values.size
+        total = n if n_tests is None else n_tests
         if bonf:
-            result[:] = np.minimum(values * np.float64(values.size), 1)
+            result[:] = np.minimum(values * np.float64(total), 1)
         elif holm or bh or by:
-            n = values.size
             order = np.argsort(values)
             if holm:
-                adjusted = values[order] * factors[-n:]
+                scale = factors[-n:] if n_tests is None else factors[:n]
+                adjusted = values[order] * scale
                 np.maximum.accumulate(adjusted, out=adjusted)
                 np.minimum(adjusted, 1, out=adjusted)
             else:
-                scale = factors if n == size else rank[:n] / n
+                scale = (
+                    factors[:n] if n_tests is not None or n == size else rank[:n] / n
+                )
                 adjusted = values[order] / scale
                 np.minimum.accumulate(adjusted[::-1], out=adjusted[::-1])
                 if by:
-                    adjusted *= harmonic[n - 1]
+                    adjusted *= harmonic[n - 1] if n_tests is None else harmonic
+                if by or n_tests is not None:
                     np.minimum(adjusted, 1, out=adjusted)
             result[order] = adjusted
         else:
-            result[:] = func(values)
+            if total > n:
+                values = np.pad(values, (0, total - n), constant_values=1.0)
+            result[:] = func(values)[:n]
 
         if missing:
             dest[valid] = result

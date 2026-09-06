@@ -32,7 +32,6 @@ from skbio.table._tabular import _ingest_table, _aggregate_features
 from ._base import _check_composition
 from ._utils import (
     _check_metadata,
-    _check_p_adjust,
     _build_dmatrix,
     _adjust_pvalues,
 )
@@ -3465,22 +3464,11 @@ def _mdfdr_pairwise(
     p_val[p_val == 0] = 1.0
     p_val = np.where(np.isnan(p_val), 1.0, p_val)
 
-    # Apply mdFDR correction. `n_rejs` adjusts each feature's comparisons as one
-    # family, with its size inflated by the global-screening factor
-    # n_feats / n_rejs.
-    func = _check_p_adjust(fwer_ctrl)
+    # Adjust each feature's comparisons with the family size inflated by
+    # the global-screening factor n_feats / n_signs.
     if n_signs:
         n_tests = n_comps * n_feats // n_signs
-        n_padding = n_tests - n_comps
-
-        def adjust(pvals):
-            # R's p.adjust(..., n=n_tests) is equivalent to adding n_tests -
-            # len(pvals) unit p-values before correction.
-            if n_padding:
-                pvals = np.pad(pvals, (0, n_padding), constant_values=1.0)
-            return func(pvals)[:n_comps]
-
-        q_val = np.apply_along_axis(adjust, 1, p_val)
+        q_val = _adjust_pvalues(p_val, fwer_ctrl, axis=1, n_tests=n_tests)
     else:
         q_val = np.ones_like(p_val)
 
@@ -3588,19 +3576,10 @@ def _mdfdr_dunnett(W, dof, fwer_ctrl, bootstraps, alpha, rng, estimable=None):
     p_val[p_val == 0] = 1.0
     p_val = np.where(np.isnan(p_val), 1.0, p_val)
 
-    # Step 3: Adjust each feature's comparisons. R's p.adjust ``n`` parameter
-    # is equivalent to padding each family with unit p-values.
-    func = _check_p_adjust(fwer_ctrl)
+    # Step 3: Adjust each feature's comparisons using the inflated family size.
     if n_signs:
         n_tests = n_comps * n_feats // n_signs
-        n_padding = n_tests - n_comps
-
-        def adjust(pvals):
-            if n_padding:
-                pvals = np.pad(pvals, (0, n_padding), constant_values=1.0)
-            return func(pvals)[:n_comps]
-
-        q_val = np.apply_along_axis(adjust, 1, p_val)
+        q_val = _adjust_pvalues(p_val, fwer_ctrl, axis=1, n_tests=n_tests)
     else:
         q_val = np.ones_like(p_val)
 

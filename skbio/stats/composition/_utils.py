@@ -108,64 +108,6 @@ def _check_sig_test(test, n_groups=None):
     return func
 
 
-def _check_p_adjust(name):
-    r"""Construct a p-value correction function based on the method name.
-
-    Parameters
-    ----------
-    name : str
-        The name of the p-value correction method. This should match one of the
-        method names available in :func:`statsmodels.stats.multitest.multipletests`.
-
-    Returns
-    -------
-    callable, optional
-        Function to correct p-values.
-
-    """
-    if name is None:
-        return
-
-    from statsmodels.stats.multitest import multipletests as sm_multipletests
-
-    name_ = name.lower()
-
-    # Original options are kept for backwards compatibility
-    # TODO: This is now not necessary
-    if name_ in ("holm", "holm-bonferroni"):
-        name_ = "holm"
-    if name_ in ("bh", "fdr_bh", "benjamini-hochberg"):
-        name_ = "fdr_bh"
-
-    def func(pvals):
-        r"""Correct p-values for multiple testing problems.
-
-        Parameters
-        ----------
-        pvals : ndarray of shape (n_tests,)
-            Original p-values.
-
-        Returns
-        -------
-        qvals : ndarray of shape (n_tests,)
-            Corrected p-values.
-
-        """
-        try:
-            res = sm_multipletests(pvals, alpha=0.05, method=name_)
-        except ValueError as e:
-            if "method not recognized" in str(e):
-                raise ValueError(f'"{name}" is not an available FDR correction method.')
-            else:  # pragma: no cover
-                raise ValueError(
-                    f"Cannot perform FDR correction using the {name} method."
-                )
-        else:
-            return res[1]
-
-    return func
-
-
 def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
     """Perform multiple testing correction of p-values.
 
@@ -272,7 +214,7 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
 
                 harmonic = digamma(n_tests + 1) + np.euler_gamma
     elif not bonf:
-        func = _check_p_adjust(method)
+        func = _sm_p_adjust(method)
 
     # Determine p-value family axis
     if axis is None:
@@ -325,6 +267,61 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
         if missing:
             dest[valid] = result
     return out
+
+
+def _sm_p_adjust(name):
+    r"""Import a p-value correction method from statsmodels.
+
+    Parameters
+    ----------
+    name : str
+        The name of the p-value correction method. This should match one of the
+        method names supported by statsmodels' `multipletests`.
+
+    Returns
+    -------
+    callable, optional
+        Function to correct p-values.
+
+    """
+    if name is None:
+        return
+    method = name.lower()
+
+    # TODO: Make statsmodels an optional dependency
+    from statsmodels.stats.multitest import multipletests as sm_multipletests
+
+    def func(pvals):
+        r"""Correct p-values for multiple testing problems.
+
+        Parameters
+        ----------
+        pvals : ndarray of shape (n_tests,)
+            Original p-values.
+
+        Returns
+        -------
+        qvals : ndarray of shape (n_tests,)
+            Corrected p-values.
+
+        """
+        try:
+            res = sm_multipletests(pvals, alpha=0.05, method=method)
+        except ValueError as e:
+            if "method not recognized" in str(e):
+                raise ValueError(
+                    f"'{name}' is not an available multiple testing correction method "
+                    "supported by scikit-bio or statsmodels."
+                )
+            else:  # pragma: no cover
+                raise ValueError(
+                    f"Cannot perform multiple testing correction using the {name} "
+                    "method."
+                )
+        else:
+            return res[1]
+
+    return func
 
 
 def _check_grouping(grouping, matrix, samples=None):

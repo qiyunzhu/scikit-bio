@@ -19,8 +19,8 @@ from skbio.stats.composition._utils import (
     _check_metadata,
     _build_dmatrix,
     _check_sig_test,
-    _check_p_adjust,
     _adjust_pvalues,
+    _sm_p_adjust,
 )
 
 
@@ -318,26 +318,6 @@ class UtilsTests(TestCase):
         obs = _check_sig_test(mannwhitneyu, n_groups=2)
         obs = _check_sig_test(kruskal, n_groups=5)
 
-    def test_check_p_adjust(self):
-        self.assertIsNone(_check_p_adjust(None))
-
-        p = [0.005, 0.011, 0.02, 0.04, 0.13]
-        obs = _check_p_adjust("holm-bonferroni")(p)
-        exp = p * np.arange(1, 6)[::-1]
-        for a, b in zip(obs, exp):
-            self.assertAlmostEqual(a, b)
-
-        p = [0.005, 0.011, 0.02, 0.04, 0.13]
-        obs = _check_p_adjust("benjamini-hochberg")(p)
-        exp = [0.025, 0.0275, 0.03333333, 0.05, 0.13]
-        for a, b in zip(obs, exp):
-            self.assertAlmostEqual(a, b)
-
-        msg = '"hello" is not an available FDR correction method.'
-        with self.assertRaises(ValueError) as cm:
-            _check_p_adjust("hello")(p)
-        self.assertEqual(str(cm.exception), msg)
-
 
 class AdjustPvaluesTests(TestCase):
 
@@ -623,6 +603,25 @@ class AdjustPvaluesTests(TestCase):
         self.assertIs(_adjust_pvalues(pval, None, out=out), out)
         npt.assert_array_equal(out, pval)
         self.assertIs(_adjust_pvalues(pval, None, out=pval), pval)
+
+    def test_sm_p_adjust(self):
+        self.assertIsNone(_sm_p_adjust(None))
+
+        pval = [0.005, 0.011, 0.02, 0.04, 0.13]
+        obs = _sm_p_adjust("holm")(pval)
+        exp = pval * np.arange(1, 6)[::-1]
+        for a, b in zip(obs, exp):
+            self.assertAlmostEqual(a, b)
+
+        pval = [0.005, 0.011, 0.02, 0.04, 0.13]
+        obs = _sm_p_adjust("fdr_bh")(pval)
+        exp = [0.025, 0.0275, 0.03333333, 0.05, 0.13]
+        for a, b in zip(obs, exp):
+            self.assertAlmostEqual(a, b)
+
+        msg = "'hello' is not an available multiple testing correction method."
+        with self.assertRaisesRegex(ValueError, msg):
+            _sm_p_adjust("hello")(pval)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,6 @@ from skbio.stats.composition._ancombc2 import (
     _sample_fractions,
     _calc_statistics,
     _calc_pvalues,
-    # _adjust_pvalues_old,
     _init_bias_params,
     _global_test,
     _constrain_est,
@@ -1120,39 +1119,6 @@ class CoreTests(TestCase):
         obs = _calc_pvalues(W, dof)
         exp = np.array([[1.0, 0.3632175], [np.nan, np.nan]])
         npt.assert_array_equal(obs.round(7), exp)
-
-    # def test_adjust_pvalues_old_nan(self):
-    #     pval = np.array([[0.01, 0.4], [np.nan, 0.2], [0.2, np.nan]])
-    #     obs = _adjust_pvalues_old(pval, "holm")
-    #     exp = np.array([[0.02, 0.4], [np.nan, 0.4], [0.2, np.nan]])
-    #     npt.assert_allclose(obs, exp, equal_nan=True)
-
-    #     # The result-construction path reuses the p-value array for q-values. Verify
-    #     # that aliasing ``out`` with the input preserves NaNs and gives the same result.
-    #     work = pval.copy()
-    #     returned = _adjust_pvalues_old(work, "holm", out=work)
-    #     self.assertIs(returned, work)
-    #     npt.assert_allclose(work, exp, equal_nan=True)
-
-    #     # A distinct output array should be supported too.
-    #     work = np.empty_like(pval)
-    #     returned = _adjust_pvalues_old(pval, "holm", out=work)
-    #     self.assertIs(returned, work)
-    #     npt.assert_allclose(work, exp, equal_nan=True)
-
-    #     # Common aliases use the optimized Benjamini-Hochberg implementation, while
-    #     # other methods continue to fall back to the generic adjustment function.
-    #     pval = np.array([0.01, 0.04, 0.03, 0.2])
-    #     exp = np.array([0.04, 0.05333333, 0.05333333, 0.2])
-    #     for method in ("bh", "fdr_bh", "benjamini-hochberg"):
-    #         obs = _adjust_pvalues_old(pval, method)
-    #         npt.assert_allclose(obs, exp)
-
-    #     obs = _adjust_pvalues_old(pval, "bonferroni")
-    #     npt.assert_allclose(obs, [0.04, 0.16, 0.12, 0.8])
-
-    #     obs = _adjust_pvalues_old(pval, None)
-    #     npt.assert_array_equal(obs, pval)
 
     def test_post_hoc_methods_recalculate(self):
         table = pd.DataFrame(

@@ -770,7 +770,7 @@ def _ancombc_core(
     p_adjust="holm",
     pseudo=0,
     var_quantile=0.05,
-    rank_mode="r",
+    match_r=True,
     alpha=0.05,
     max_iter=100,
     tol=1e-5,
@@ -779,21 +779,21 @@ def _ancombc_core(
 
     Parameters
     ----------
-    rank_mode : {"r", "coefficient"}, optional
+    match_r : bool, optional
         How to handle rank-deficient feature-specific regressions. Relevant when input
         data table contain zeros.
 
-        - "r" (default) reproduces R package ANCOMBC's behavior, which reduces a
+        - True (default) reproduces R package ANCOMBC's behavior, which reduces a
           categorical predictor to one observed level. For ordinary additive treatment-
           coded factors, it also uses the first remaining level in the Patsy-processed
           formula as a feature-local reference when the global reference is absent.
 
-        - "coefficient" keeps the Moore-Penrose fit and suppresses only coefficients
-          that are not uniquely estimable.
+        - False keeps the Moore-Penrose fit and suppresses only coefficients that are
+          not uniquely estimable.
 
     Notes
     -----
-    By default (`rank_mode="r"`), scikit-bio mirrors the R code when this omission
+    By default (`match_r=True`), scikit-bio mirrors the R code when this omission
     leaves a categorical predictor with only one observed level: the entire feature
     fit is unavailable, with `Log(FC)`, `SE` and `W`` reported as NaN, `pvalue` and
     `qvalue` as 1, and `Signif` as False.
@@ -802,18 +802,13 @@ def _ancombc_core(
     its global reference, the first remaining level in Patsy's category order is used
     as a feature-local reference before bias estimation. This often happens when the
     data is highly sparse and certain features are zeros within the entire reference
-    group.
+    group. This reference rebasing is intentionally not applied to interactions or
+    custom contrasts, whose coefficient bases require a joint transformation.
 
-    This reference rebasing is intentionally not applied to interactions or custom
-    contrasts, whose coefficient bases require a joint transformation. Therefore, when
-    complex formulae are specified, scikit-bio may not precisely mirror the R behavior.
-    This is by design since the two programming languages are not entirely consistent
-    in the handling of statistical models.
-
-    The alternative mode `rank_mode="coefficient"` retains the Moore-Penrose fit
-    instead and suppresses only coefficients that are not uniquely estimable.
-    Statistically, this mode is more favorable. It is off by default to preserve the R
-    behavior. But it is worth further investigation.
+    The alternative mode `match_r=False` retains the Moore-Penrose fit instead and
+    suppresses only coefficients that are not uniquely estimable. Statistically, this
+    mode is more favorable. It is off by default to preserve the R behavior. But it is
+    worth further investigation.
 
     """
     # Validate parameters
@@ -848,14 +843,14 @@ def _ancombc_core(
     groups = _validate_grouping(metadata, dmat, grouping)
 
     # Estimate initial model parameters.
-    # ANCOM-BC2 always re-estimates parameters after sampling-fraction correction, so
+    # ANCOM-BC2 always re-estimates parameters after sampling fraction correction, so
     # its initial EM fit needs variances only. For ANCOM-BC this is the final fit, so
     # retain the grouping covariance submatrix when post-hoc analysis was requested.
     # Data matrix will be overwritten during dense parameter estimation. However it is
     # needed for sampling fraction estimation in the ANCOM-BC2 route. Therefore `v2`
     # instructs the function to make a copy.
     var_hat, beta, _, vcov_hat, estimable, _ = _estimate_params(
-        data, dmat, None if v2 else groups, missing, v2, rank_mode=rank_mode
+        data, dmat, None if v2 else groups, missing, True, v2, match_r
     )
     # ``None`` is the fast-path sentinel used below. Sparse full-rank datasets should
     # pay no masking/allocation cost in the dominant EM loop.
@@ -892,24 +887,19 @@ def _ancombc_core(
         # Correct coefficients (logFC) according to estimated bias.
         beta_hat = beta.T - delta_em
         estimable = estimable
-
-        # Skip degree of freedom calculation.
         dof = None
 
     # ANCOM-BC2
     else:
         # Estimate sampling fractions
         theta_hat = _sample_fractions(
-            data,
-            dmat,
-            beta,
-            delta_em,
-            missing=missing,
-            estimable=estimable,
-            rank_mode=rank_mode,
+            data, dmat, beta, delta_em, missing, estimable, match_r
         )
 
         # Aggregate data
+        # ANCOM-BC2 aggregates data after initial parameter estimation. Therefore,
+        # pre-aggregation of data before running `ancombc2` will produce different
+        # results. This does not affect ANCOM-BC.
         if aggregator is not None:
             matrix, features = _aggregate_features(matrix, aggregator, features)
             data, missing = _transform_data(matrix, pseudo, center=v2)
@@ -918,19 +908,10 @@ def _ancombc_core(
         data -= theta_hat[:, None]
 
         # Re-estimate parameters.
-        # Since this is the final fit, retain the grouping covariance submatrix if
-        # requested.
+        # Since this is the final fit, skip sampling fraction estimation, and retain
+        # the grouping covariance submatrix if requested.
         var_hat, beta_hat, _, vcov_hat, estimable, rank = _estimate_params(
-            data,
-            dmat,
-            groups,
-            missing,
-            False,
-            rank_mode=rank_mode,
-            # R passes the already estimated sampling fractions into its final lm fit
-            # and does not estimate another shared sample effect. ``coefficient`` mode
-            # preserves the original Python behavior for side-by-side examination.
-            estimate_theta=rank_mode != "r",
+            data, dmat, groups, missing, False, False, match_r
         )
         beta_hat = beta_hat.T
         if estimable is not None and np.all(estimable):
@@ -1108,7 +1089,7 @@ def _transform_data(data, pseudo=None, center=False):
 
 
 def _estimate_params(
-    data, dmat, groups, missing, keep_data=True, rank_mode="r", estimate_theta=True
+    data, dmat, groups, missing, biased=True, keep_data=True, match_r=True
 ):
     """Estimate model parameters.
 
@@ -1134,12 +1115,12 @@ def _estimate_params(
     keep_data : bool, optional
         If True, the original data table will be kept intact. Relevant when `missing`
         is not provided (dense route). Sparse route always keeps the data table.
-    rank_mode : {"r", "coefficient"}, optional
+    match_r : bool, optional
         Rank-deficiency handling policy for sparse feature-specific regressions.
-    estimate_theta : bool, optional
-        Whether to iteratively estimate sample effects in the sparse route. ANCOM-BC2
-        uses this for the initial fit only; its final fit uses the already estimated
-        sampling fractions and therefore sets this to False.
+    biased : bool, optional
+        Whether to estimate sample-specific biases (theta) in the sparse route. Only
+        the initial fit needs this (True). ANCOM-BC2's final fit considers biases as
+        already corrected and theta = 0 (False).
 
     Returns
     -------
@@ -1158,23 +1139,18 @@ def _estimate_params(
           Shape: (n_features, n_groups - 1, n_groups - 1)
     estimable : ndarray of bool or None
         For sparse data, indicates which feature-covariate coefficients are retained
-        for inference under ``rank_mode``. Dense data return None.
+        for inference when `match_r=True`. Dense data return None.
     rank : ndarray of int or None
         Feature-specific masked-design ranks for sparse data. Dense data return None.
 
     Notes
     -----
-    Returned `var_hat` is F-contiguous, which should (presumably) benefit the
-    downstream EM optimization process.
+    Returned `var_hat` is F-contiguous, which should presumably benefit the downstream
+    EM optimization process.
     """
     if missing is not None:
         return _estimate_params_sparse(
-            data,
-            dmat,
-            missing,
-            groups,
-            rank_mode=rank_mode,
-            estimate_theta=estimate_theta,
+            data, dmat, missing, groups, biased, match_r=match_r
         )
     elif keep_data:
         result = _estimate_params_dense(data.copy(), dmat, groups)
@@ -1223,12 +1199,12 @@ def _estimate_params_sparse(
     dmat,
     missing,
     groups=True,
+    biased=True,
     tol=1e-2,
     max_iter=20,
     direct=False,
     batch=True,
-    rank_mode="r",
-    estimate_theta=True,
+    match_r=True,
 ):
     """Estimate model parameters from a sparse matrix (with missing values).
 
@@ -1251,9 +1227,8 @@ def _estimate_params_sparse(
         Iteration tolerance. Default is 1e-2 (matching ANCOM-BC2).
     max_iter : int, optional
         Maximum number of iterations. Default is 20 (matching ANCOM-BC2).
-    estimate_theta : bool, optional
-        If False, fit coefficients once with zero additional sample effects. This
-        matches ANCOM-BC2's final sparse fit after sampling-fraction correction.
+    biased : bool, optional
+        Estimate theta if True or set theta to 0 if False.
 
     Returns
     -------
@@ -1281,8 +1256,8 @@ def _estimate_params_sparse(
         batch,
         tol,
         max_iter,
-        rank_mode=rank_mode,
-        estimate_theta=estimate_theta,
+        match_r=match_r,
+        biased=biased,
     )
 
     # Calculate residuals
@@ -1307,7 +1282,7 @@ def _estimate_params_sparse(
             missing_cov = np.outer(gram_sum_cov, gram_sum_cov)
             covmat += (0.1 * n_missing)[:, None, None] * missing_cov
 
-    if rank_mode == "r" and estimable is not None:
+    if match_r and estimable is not None:
         # When stats::lm fails, R substitutes NA fitted values for the *entire* feature.
         # Its sandwich loop then replaces every NA element of every sample contribution
         # by 0.1. Although these failed-feature variances are hidden from the final
@@ -1355,8 +1330,8 @@ def _lstsq_sparse(
     batch=None,
     tol=1e-2,
     max_iter=20,
-    rank_mode="r",
-    estimate_theta=True,
+    match_r=True,
+    biased=True,
 ):
     """Fit missing-response models using full pseudoinverse.
 
@@ -1371,21 +1346,23 @@ def _lstsq_sparse(
     U, S, Vh = np.linalg.svd(X_w, full_matrices=False)
     S_inv = _invert_singular(S)
     rank = np.count_nonzero(S_inv, axis=1)
-    if rank_mode == "r":
+
+    if match_r:
         # stats::lm only fails wholesale when model construction itself becomes
         # impossible (most importantly, a categorical predictor collapses to one
         # observed level). Mere matrix rank deficiency does not necessarily fail an R
         # fit: lm may drop a dummy coefficient and ANCOMBC fills that slot with zero.
-        fit_valid, rebases = _r_fit_info(dmat, missing)
+        valid, rebases = _r_fit_info(dmat, missing)
         estimable = (
             None
-            if fit_valid is None
-            else np.broadcast_to(fit_valid[:, None], (rank.size, dmat.shape[1]))
+            if valid is None
+            else np.broadcast_to(valid[:, None], (rank.size, dmat.shape[1]))
         )
     else:
-        fit_valid = None
+        valid = None
         rebases = ()
         estimable = _coef_estimable(Vh, S_inv)
+
     V = np.swapaxes(Vh, -1, -2)
     dmat_inv = np.einsum("fpk,fk,fsk->fps", V, S_inv, U, optimize=True)
 
@@ -1393,29 +1370,26 @@ def _lstsq_sparse(
     np.copyto(resp, 0.0, where=missing)
     beta = np.einsum("fps,sf->fp", dmat_inv, resp, optimize=True)
 
-    # Solve the missing-response model:
-    #   data[s, f] = dmat[s] @ beta[f] + theta[s]
-    # for observed entries.
+    # Solve the missing response model: data[s, f] = dmat[s] @ beta[f] + theta[s] for
+    # observed entries.
+    # Skip and set theta = 0 if not needed.
+    if not biased:
+        theta = np.zeros(n_samps, dtype=data.dtype)
+
     # The direct route solves the coupled fixed-point system for `theta` before
     # estimating `beta`.
-    # The iterative route alternates updates of feature coefficients `beta` and shared
-    # sample effects `theta`.
-    if not estimate_theta:
-        # R's final .iter_mle call receives theta_hat rather than NULL. Because the
-        # caller has already subtracted theta_hat from ``data``, no second theta
-        # iteration is performed here.
-        theta = np.zeros(n_samps, dtype=data.dtype)
     elif direct:
-        theta, beta = _solve_sparse(
-            data, dmat, missing, beta, resp, W, dmat_inv, fit_valid
-        )
+        theta, beta = _solve_sparse(data, dmat, missing, beta, resp, W, dmat_inv, valid)
+
+    # The iterative route alternates updates of feature coefficients `beta` and shared
+    # sample effects `theta`. The compact feature operators mimicks R code.
     else:
-        # Compact feature operators (mimicks R code)
+
         def func(out):
             np.einsum("fps,sf->fp", dmat_inv, resp, out=out, optimize=True)
 
         theta, beta = _solve_sparse_iter(
-            data, dmat, missing, beta, resp, func, tol, max_iter, fit_valid
+            data, dmat, missing, beta, resp, func, tol, max_iter, valid
         )
 
     # When zero omission removes Patsy's reference level but leaves two or more
@@ -1425,7 +1399,7 @@ def _lstsq_sparse(
     # coefficients used by bias estimation but preserves fitted values for every
     # observed response, so it need only be done once after the theta iteration.
     if rebases:
-        _r_rebase_categorical(beta, rebases, fit_valid)
+        _r_rebase_categorical(beta, rebases, valid)
 
     return theta, beta, estimable, rank
 
@@ -1439,8 +1413,8 @@ def _lstsq_sparse_batch(
     tol=1e-2,
     max_iter=20,
     max_cond=1e4,
-    rank_mode="r",
-    estimate_theta=True,
+    match_r=True,
+    biased=True,
 ):
     """Fit missing-response models with chunked SVD and compact spectral operators.
 
@@ -1467,11 +1441,7 @@ def _lstsq_sparse_batch(
     # R-compatibility only needs a feature-level failed-fit mask and therefore avoids
     # the O(F * P^2) row-space projector. The finer Python policy allocates individual
     # coefficient estimability metadata.
-    estimable = (
-        np.empty((n_feats, n_covars), dtype=bool)
-        if rank_mode == "coefficient"
-        else None
-    )
+    estimable = None if match_r else np.empty((n_feats, n_covars), dtype=bool)
     rank = np.empty(n_feats, dtype=np.intp)
 
     # Determine batch size
@@ -1529,15 +1499,15 @@ def _lstsq_sparse_batch(
         # U and the masked design are the large block-local arrays.
         del U, X_w, W_block
 
-    if rank_mode == "r":
+    if match_r:
         # Determine actual R-style fit failures separately from numerical rank. A
         # missing dummy level can make the masked global design rank-deficient while
         # stats::lm still succeeds after dropping that unused factor level.
-        fit_valid, rebases = _r_fit_info(dmat, missing)
-        if fit_valid is not None:
-            estimable = np.broadcast_to(fit_valid[:, None], (n_feats, n_covars))
+        valid, rebases = _r_fit_info(dmat, missing)
+        if valid is not None:
+            estimable = np.broadcast_to(valid[:, None], (n_feats, n_covars))
     else:
-        fit_valid = None
+        valid = None
         rebases = ()
 
     # Preserve the input precision for the response and compact-operator workspaces.
@@ -1550,38 +1520,26 @@ def _lstsq_sparse_batch(
 
     _apply_pinv(dmat, resp, Vh_all, S_inv_all, beta, rhs, tmp, illed)
 
-    if not estimate_theta:
-        # Final ANCOM-BC2 fit: sampling fractions were already subtracted upstream.
-        # Do not estimate a second shared sample-effect vector.
+    params = data, dmat, missing, beta, resp
+
+    if not biased:
         theta = np.zeros(n_samps, dtype=dtype)
     elif direct:
         theta, beta = _solve_sparse_batch(
-            data,
-            dmat,
-            missing,
-            beta,
-            resp,
-            Vh_all,
-            S_inv_all,
-            rhs,
-            batch,
-            illed,
-            fit_valid,
+            *params, Vh_all, S_inv_all, rhs, batch, illed, valid
         )
     else:
-        # Full-pseudoinverse; production code
+        # Production code: full pseudoinverse
         def func(out):
             _apply_pinv(dmat, resp, Vh_all, S_inv_all, out, rhs, tmp, illed)
 
-        theta, beta = _solve_sparse_iter(
-            data, dmat, missing, beta, resp, func, tol, max_iter, fit_valid
-        )
+        theta, beta = _solve_sparse_iter(*params, func, tol, max_iter, valid)
 
     # See the non-batched route above. The reparameterization is feature-local and
     # preserves observed fitted values; it is needed before EM because ANCOMBC's
     # bias correction operates on the mapped coefficient slots themselves.
     if rebases:
-        _r_rebase_categorical(beta, rebases, fit_valid)
+        _r_rebase_categorical(beta, rebases, valid)
 
     return theta, beta, estimable, rank
 
@@ -1669,7 +1627,7 @@ def _apply_pinv(dmat, resp, Vh, S_inv, out=None, rhs=None, tmp=None, illed=None)
     return out
 
 
-def _solve_sparse(data, dmat, missing, beta, resp, W, dmat_inv, fit_valid=None):
+def _solve_sparse(data, dmat, missing, beta, resp, W, dmat_inv, valid=None):
     """Solve the fully converged fixed point for zero-containing data.
 
     This exact method should produce numerically better result than the iterative
@@ -1682,18 +1640,16 @@ def _solve_sparse(data, dmat, missing, beta, resp, W, dmat_inv, fit_valid=None):
     np.copyto(fitted, 0.0, where=missing)
     np.subtract(data, fitted, out=resp)
     np.nan_to_num(resp, copy=False, nan=0.0)
-    if fit_valid is None:
+    if valid is None:
         residual_sum = resp.sum(axis=1)
         observed_counts = missing.shape[1] - missing.sum(axis=1)
         W_fit = W
     else:
         # Match R's failed-fit behavior: invalid features have NA fitted values and are
         # omitted by ``colMeans(..., na.rm=TRUE)`` when theta is updated.
-        residual_sum = np.sum(resp, axis=1, where=fit_valid[None, :])
-        observed_counts = fit_valid.sum() - np.sum(
-            missing, axis=1, where=fit_valid[None, :]
-        )
-        W_fit = W * fit_valid[:, None]
+        residual_sum = np.sum(resp, axis=1, where=valid[None, :])
+        observed_counts = valid.sum() - np.sum(missing, axis=1, where=valid[None, :])
+        W_fit = W * valid[:, None]
     system = np.diag(observed_counts) - np.einsum(
         "fs,sp,fpt->st", W_fit, dmat, dmat_inv, optimize=True
     )
@@ -1713,7 +1669,7 @@ def _solve_sparse(data, dmat, missing, beta, resp, W, dmat_inv, fit_valid=None):
 
 
 def _solve_sparse_iter(
-    data, dmat, missing, beta, resp, func, tol, max_iter, fit_valid=None
+    data, dmat, missing, beta, resp, func, tol, max_iter, valid=None
 ):
     """Iterative solver for coefficients (beta) and residuals (theta).
 
@@ -1721,12 +1677,12 @@ def _solve_sparse_iter(
     optimized path.
     """
     n_samps, n_feats = data.shape
-    if fit_valid is None:
+    if valid is None:
         n_obs = n_feats - np.sum(missing, axis=1)
     else:
         # Avoid materializing an N-by-F combined mask. This branch is only active for
         # R-compatible failed fits; full-rank datasets retain the original fast path.
-        n_obs = fit_valid.sum() - np.sum(missing, axis=1, where=fit_valid[None, :])
+        n_obs = valid.sum() - np.sum(missing, axis=1, where=valid[None, :])
     theta = np.zeros(n_samps, dtype=data.dtype)
 
     beta_new = np.empty_like(beta)
@@ -1748,13 +1704,13 @@ def _solve_sparse_iter(
         # NaN. Reduce directly into the pre-allocated theta workspace.
         np.matmul(dmat, beta_new.T, out=resp)
         np.subtract(data, resp, out=resp)
-        if fit_valid is None:
+        if valid is None:
             np.nansum(resp, axis=1, out=theta_new)
         else:
             # R represents a failed feature fit by NA fitted values, which removes the
             # feature from this sample-wise mean. ``where`` reproduces that reduction
             # without writing NaNs through an N-by-F block on every iteration.
-            np.nansum(resp, axis=1, where=fit_valid[None, :], out=theta_new)
+            np.nansum(resp, axis=1, where=valid[None, :], out=theta_new)
         # R's na.rm=TRUE mean is NaN when no valid feature is observed for a sample.
         # Use an explicit divide to preserve that behavior without emitting a warning.
         zero_obs = n_obs == 0
@@ -1768,12 +1724,12 @@ def _solve_sparse_iter(
         np.square(beta, out=beta)
         np.subtract(theta_new, theta, out=theta)
         np.square(theta, out=theta)
-        if fit_valid is None:
+        if valid is None:
             beta_delta = np.nansum(beta)
         else:
             # Failed R fits contain NA coefficients, so their coefficient changes are
             # omitted from the convergence criterion as well.
-            beta_delta = np.sum(beta, where=fit_valid[:, None])
+            beta_delta = np.sum(beta, where=valid[:, None])
         epsilon = np.sqrt(beta_delta + np.nansum(theta))
 
         beta, beta_new = beta_new, beta
@@ -1784,7 +1740,7 @@ def _solve_sparse_iter(
 
 
 def _solve_sparse_batch(
-    data, dmat, missing, beta, resp, Vh, S_inv, rhs, batch, illed, fit_valid=None
+    data, dmat, missing, beta, resp, Vh, S_inv, rhs, batch, illed, valid=None
 ):
     """Direct fixed-point solve using compact operators and bounded reconstruction."""
     n_samps, n_feats = data.shape
@@ -1794,20 +1750,20 @@ def _solve_sparse_batch(
     np.copyto(resp, 0.0, where=missing)
     np.subtract(data, resp, out=resp)
     np.nan_to_num(resp, copy=False, nan=0.0)
-    if fit_valid is None:
+    if valid is None:
         resid_sum = resp.sum(axis=1)
         n_obs = missing.shape[1] - missing.sum(axis=1)
     else:
-        resid_sum = np.sum(resp, axis=1, where=fit_valid[None, :])
-        n_obs = fit_valid.sum() - np.sum(missing, axis=1, where=fit_valid[None, :])
+        resid_sum = np.sum(resp, axis=1, where=valid[None, :])
+        n_obs = valid.sum() - np.sum(missing, axis=1, where=valid[None, :])
 
     system = np.diag(n_obs.astype(np.result_type(dmat, float), copy=False))
     V = np.swapaxes(Vh, -1, -2)
     for start in range(0, n_feats, batch):
         stop = min(start + batch, n_feats)
         W_block = 1.0 - missing[:, start:stop].T
-        if fit_valid is not None:
-            W_block *= fit_valid[start:stop, None]
+        if valid is not None:
+            W_block *= valid[start:stop, None]
 
         # Reconstruct only this block of X_f^+ = V S^-2 V.T X_f.T. This is needed by
         # the direct sample-effect system but is discarded immediately afterwards.
@@ -2283,7 +2239,6 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
     # The original R code has `na.rm = TRUE` in many commands. This is not necessary
     # in the current implementation, because the pre-correction coefficients (beta)
     # is guaranteed to not contain NaN values.
-
     # Mask NaN values (deemed unnecessary; left here for future examination).
     # beta = beta[~np.isnan(beta)]
 
@@ -2340,9 +2295,7 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
     # Objective function for optimization of variance estimation. For fixed `loc` and
     # responsibilities, the negative weighted Gaussian log-likelihood is, up to an
     # additive constant:
-    #
     #   0.5 * sum(resp * ((beta - loc)**2 / (var_hat + x) + log(var_hat + x)))
-    #
     # The omitted 0.5 * log(2 * pi) * sum(resp) term is independent of `x` and
     # therefore cannot affect the minimizer. The squared residual `(beta - loc)**2`
     # is also independent of `x`; it is computed once per component below and passed
@@ -2375,9 +2328,7 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
         # The normalizing constant 1 / sqrt(2 * pi) is shared by all components and
         # cancels when responsibilities are normalized, so it is omitted. Compute the
         # remaining density directly in pre-allocated memory:
-        #
         #   exp(-0.5 * (beta - mean_r)**2 / nu_r) / sqrt(nu_r)
-        #
         # where `nu_inv` is 1 / nu_r and `inv_stdevs` is 1 / sqrt(nu_r).
         np.subtract(beta, means[:, None], out=resp)
         np.square(resp, out=resp)
@@ -2558,7 +2509,13 @@ def _estimate_bias_var(beta, var_hat, params):
 
 
 def _sample_fractions(
-    data, dmat, beta, delta_em, missing=None, estimable=None, rank_mode="coefficient"
+    data,
+    dmat,
+    beta,
+    delta_em,
+    missing=None,
+    estimable=None,
+    match_r=False,
 ):
     """Estimate sampling fractions.
 
@@ -2577,9 +2534,9 @@ def _sample_fractions(
         dense calculation that avoids an n_samples x n_features residual array.
     estimable : ndarray of bool of shape (n_features, n_covariates), optional
         Inferential estimability mask from the initial sparse fit.
-    rank_mode : {"r", "coefficient"}, optional
-        In ``"r"`` mode, features whose R-style fit failed contribute zero
-        fitted value when sampling fractions are formed, matching ANCOMBC2.
+    match_r : bool, optional
+        If True, features whose R-style fit failed contribute zero fitted value when
+        sampling fractions are formed.
 
     Returns
     -------
@@ -2587,11 +2544,9 @@ def _sample_fractions(
         Estimated sampling fractions.
 
     """
-    # Compute sampling fractions. For dense data, linearity of the mean gives
-    #
-    # mean(data - X @ beta + X @ delta, axis=features)
-    #   = mean(data) - X @ mean(beta) + X @ delta,
-    #
+    # Compute sampling fractions. For dense data, linearity of the mean gives:
+    #   mean(data - X @ beta + X @ delta, axis=features)
+    #     = mean(data) - X @ mean(beta) + X @ delta,
     # avoiding another n_samples x n_features matrix while `data` must remain intact.
     if missing is None:
         theta_hat = np.mean(data, axis=1)
@@ -2603,14 +2558,14 @@ def _sample_fractions(
         # failed per-feature lm fit as contributing zero fitted value (rowSums(...,
         # na.rm=TRUE)). Reproduce that only in R-compatibility mode; the
         # coefficient-level mode deliberately keeps the Moore-Penrose fitted values.
-        if rank_mode == "r" and estimable is not None:
-            fit_valid = np.all(estimable, axis=1)
+        if match_r and estimable is not None:
+            valid = np.all(estimable, axis=1)
             beta_work = beta.copy()
-            beta_work[:, ~fit_valid] = 0.0
+            beta_work[:, ~valid] = 0.0
             intm = dmat @ beta_work
             # The bias correction is likewise absent for a failed fit because NA -
             # delta remains NA in R and is ignored by rowSums(na.rm=TRUE).
-            intm -= (dmat @ delta_em)[:, None] * fit_valid[None, :]
+            intm -= (dmat @ delta_em)[:, None] * valid[None, :]
         else:
             intm = dmat @ beta
             intm -= (dmat @ delta_em)[:, None]

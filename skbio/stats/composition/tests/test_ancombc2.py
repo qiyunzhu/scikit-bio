@@ -462,8 +462,7 @@ class CoreTests(TestCase):
         data[missing] = np.nan
 
         _, beta, estimable, _ = _lstsq_sparse_batch(
-            data, dmat, missing, False, batch=2, rank_mode="r",
-            estimate_theta=False,
+            data, dmat, missing, False, batch=2, match_r=True, biased=False,
         )
         self.assertIsNone(estimable)
 
@@ -810,7 +809,7 @@ class CoreTests(TestCase):
         data_tr = rclr(self.data1, axis=0, validate=False)
         full = _estimate_params_sparse(data_tr, self.dmat1, self.data1 == 0)
         diag = _estimate_params_sparse(
-            data_tr, self.dmat1, self.data1 == 0, groups=None
+            data_tr, self.dmat1, self.data1 == 0, None
         )
         npt.assert_allclose(diag[0], full[0])
         npt.assert_allclose(diag[1], full[1])
@@ -834,20 +833,10 @@ class CoreTests(TestCase):
 
         for solver in (False, True):
             full = _estimate_params_sparse(
-                data.copy(),
-                dmat,
-                zero_mask,
-                max_iter=10,
-                groups=True,
-                batch=solver,
+                data.copy(), dmat, zero_mask, True, batch=solver, max_iter=10
             )
             subset = _estimate_params_sparse(
-                data.copy(),
-                dmat,
-                zero_mask,
-                max_iter=10,
-                groups=groups,
-                batch=solver,
+                data.copy(), dmat, zero_mask, groups, batch=solver, max_iter=10
             )
             npt.assert_allclose(subset[0], full[0])
             npt.assert_allclose(subset[1], full[1])
@@ -864,10 +853,7 @@ class CoreTests(TestCase):
         # Exercise several block boundaries, including one feature per SVD.
         for batch_size in (1, 3, None):
             batched = _estimate_params_sparse(
-                data_tr,
-                self.dmat1,
-                zero_mask,
-                batch=batch_size,
+                data_tr, self.dmat1, zero_mask, batch=batch_size
             )
             for observed, expected in zip(batched[:4], legacy[:4]):
                 if observed is None:
@@ -878,18 +864,10 @@ class CoreTests(TestCase):
 
         # The diagonal-only covariance route must remain solver-independent too.
         legacy_diag = _estimate_params_sparse(
-            data_tr,
-            self.dmat1,
-            zero_mask,
-            batch=None,
-            groups=None,
+            data_tr, self.dmat1, zero_mask, None, batch=None
         )
         batched_diag = _estimate_params_sparse(
-            data_tr,
-            self.dmat1,
-            zero_mask,
-            batch=2,
-            groups=None,
+            data_tr, self.dmat1, zero_mask, None, batch=2
         )
         for observed, expected in zip(batched_diag[:3], legacy_diag[:3]):
             npt.assert_allclose(observed, expected, rtol=1e-12, atol=1e-12)
@@ -910,22 +888,10 @@ class CoreTests(TestCase):
         data[zero_mask] = np.nan
 
         legacy = _estimate_params_sparse(
-            data,
-            dmat,
-            zero_mask,
-            batch=None,
-            tol=0.0,
-            max_iter=10,
-            groups=None,
+            data, dmat, zero_mask, None, batch=None, tol=0.0, max_iter=10
         )
         batched = _estimate_params_sparse(
-            data,
-            dmat,
-            zero_mask,
-            batch=4,
-            tol=0.0,
-            max_iter=10,
-            groups=None,
+            data, dmat, zero_mask, None, batch=4, tol=0.0, max_iter=10
         )
         for observed, expected in zip(batched[:3], legacy[:3]):
             npt.assert_allclose(observed, expected)
@@ -1447,8 +1413,7 @@ class Ancombc2Tests(TestCase):
         dmat = dmatrix("group", metadata)
         for batch in (None, 1):
             var, beta, theta, cov, estimable, rank = _estimate_params_sparse(
-                data, dmat, missing, groups=None, batch=batch,
-                rank_mode="coefficient",
+                data, dmat, missing, groups=None, batch=batch, match_r=False
             )
             self.assertIsNone(cov)
             self.assertTrue(np.isfinite(var).all())
@@ -1458,7 +1423,7 @@ class Ancombc2Tests(TestCase):
             npt.assert_array_equal(estimable[-2:], [[True, False], [False, False]])
             npt.assert_array_equal(rank, [2] * 8 + [1, 1])
 
-        res = _ancombc_core(table, metadata, "group", v2=True, rank_mode="coefficient")
+        res = _ancombc_core(table, metadata, "group", v2=True, match_r=False)
 
         self.assertTrue(np.isfinite(res._beta_hat).all())
         npt.assert_array_equal(
@@ -1529,7 +1494,7 @@ class Ancombc2Tests(TestCase):
         self.assertTrue(np.isfinite(res_r.global_test().loc["partial", "W"]))
 
         res = _ancombc_core(
-            table, metadata, "group", v2=True, grouping="group", rank_mode="coefficient"
+            table, metadata, "group", v2=True, grouping="group", match_r=False
         )
 
         npt.assert_array_equal(res._estimable[-1], [True, True, False])
@@ -1830,8 +1795,7 @@ class PostHocTests(TestCase):
                          [True, True, True], [False, False, False]):
             selected = np.array(selected)
             for method, sm_method in (("holm", "holm"), ("bh", "fdr_bh"),
-                                      ("bonf", "bonferroni"), ("by", "fdr_by"),
-                                      ("sidak", "sidak")):
+                                      ("bonf", "bonferroni"), ("by", "fdr_by")):
                 with patch("skbio.stats.composition._ancombc2._global_test",
                            return_value=(None, None, None, selected)):
                     pair = _mdfdr_pairwise(

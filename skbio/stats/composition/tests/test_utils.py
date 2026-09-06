@@ -347,17 +347,27 @@ class AdjustPvaluesTests(TestCase):
         for method in ("holm", "holm-bonferroni", "HOLM"):
             obs = _adjust_pvalues(pval, method)
             npt.assert_allclose(obs, [0.09, 0.04, 0.09, 0.2])
-        for method in ("bh", "fdr_bh", "benjamini-hochberg", "BH"):
+        for method in ("bh", "benjamini-hochberg", "BH"):
             obs = _adjust_pvalues(pval, method)
             npt.assert_allclose(obs, [0.16 / 3, 0.04, 0.16 / 3, 0.2])
         npt.assert_array_equal(_adjust_pvalues(pval), obs)
         npt.assert_array_equal(pval, original)
         self.assertFalse(np.shares_memory(obs, pval))
 
+    def test_bonferroni_and_by(self):
+        pval = np.array([0.04, 0.01, 0.03, 0.2])
+        for method in ("bonferroni", "bonf", "BONFERRONI"):
+            npt.assert_allclose(_adjust_pvalues(pval, method),
+                                [0.16, 0.04, 0.12, 0.8])
+        # H_4 = 25/12; scale the BH values by this factor.
+        for method in ("by", "benjamini-yekutieli", "BY"):
+            npt.assert_allclose(_adjust_pvalues(pval, method),
+                                [1 / 9, 1 / 12, 1 / 9, 5 / 12])
+
     def test_ties_and_bounds(self):
-        for method in ("holm", "bh"):
+        for method in ("holm", "bh", "bonf", "by"):
             obs = _adjust_pvalues([1, 0.5, 0, 0.5], method)
-            exp = [1, 1, 0, 1] if method == "holm" else [1, 2 / 3, 0, 2 / 3]
+            exp = ([1, 2 / 3, 0, 2 / 3] if method == "bh" else [1, 1, 0, 1])
             npt.assert_allclose(obs, exp)
             npt.assert_array_equal(_adjust_pvalues(np.zeros(5), method), 0)
             npt.assert_array_equal(_adjust_pvalues(np.ones(5), method), 1)
@@ -388,7 +398,8 @@ class AdjustPvaluesTests(TestCase):
         pval = rng.random((3, 4, 5)) ** 4
         pval[0, 1, 2] = np.nan
         original = pval.copy()
-        for method, sm_method in (("holm", "holm"), ("bh", "fdr_bh")):
+        for method, sm_method in (("holm", "holm"), ("bh", "fdr_bh"),
+                                  ("bonferroni", "bonferroni"), ("by", "fdr_by")):
             for axis in range(3):
                 exp = np.empty_like(pval)
                 data = np.moveaxis(pval, axis, -1)
@@ -426,7 +437,7 @@ class AdjustPvaluesTests(TestCase):
         npt.assert_allclose(_adjust_pvalues(pval, "holm", axis=None), exp)
 
     def test_empty_and_singleton(self):
-        for method in ("holm", "bh"):
+        for method in ("holm", "bh", "bonferroni", "by"):
             for shape in ((0,), (0, 3), (3, 0), (2, 0, 4)):
                 pval = np.empty(shape)
                 for axis in (*range(len(shape)), None):
@@ -441,19 +452,23 @@ class AdjustPvaluesTests(TestCase):
     def test_dtypes(self):
         for dtype in (np.float16, np.float32, np.float64, np.longdouble):
             pval = np.array([0.04, 0.01, 0.03, 0.2], dtype=dtype)
-            for method in ("holm", "bh"):
+            for method in ("holm", "bh", "bonferroni", "by"):
                 obs = _adjust_pvalues(pval, method)
                 self.assertEqual(obs.dtype, dtype)
                 exp = _adjust_pvalues(pval.astype(np.float64), method)
                 # The reference is limited to float64 even for longdouble.
                 tol = 2 * max(np.finfo(dtype).eps, np.finfo(np.float64).eps)
                 npt.assert_allclose(obs, exp, rtol=tol)
+
+        # Non-floating point data types are prohibited.
+        msg = "`pval` must have a floating-point data type."
         for dtype in (np.int8, np.uint64):
-            obs = _adjust_pvalues(np.array([0, 1, 1], dtype=dtype))
-            self.assertEqual(obs.dtype, np.float64)
-            npt.assert_array_equal(obs, [0, 1, 1])
+            with self.assertRaises(TypeError) as cm:
+                _adjust_pvalues(np.array([0, 1, 1], dtype=dtype))
+            self.assertEqual(str(cm.exception), msg)
+
         # Low-precision output must not overflow during intermediate scaling.
-        for method in ("holm", "bh"):
+        for method in ("holm", "bh", "bonferroni", "by"):
             with np.errstate(over="raise", invalid="raise"):
                 obs = _adjust_pvalues(np.ones(70000, dtype=np.float16), method)
             npt.assert_array_equal(obs, 1)
@@ -463,7 +478,7 @@ class AdjustPvaluesTests(TestCase):
                          [0.01, 0.04, 0.4],
                          [0.03, 0.01, 0.2],
                          [0.2, 0.2, np.nan]])
-        for method in ("holm", "bh"):
+        for method in ("holm", "bh", "bonferroni", "by"):
             for p in (pval.copy(), np.asfortranarray(pval), pval.T,
                       pval[::-1, ::-1], pval[::2, ::2]):
                 original = p.copy()
@@ -502,7 +517,8 @@ class AdjustPvaluesTests(TestCase):
         pval[:4, 2] = np.nan
         pval[:, 3] = np.nan
         pval[::2, 4] = np.nan
-        for method, sm_method in (("holm", "holm"), ("bh", "fdr_bh")):
+        for method, sm_method in (("holm", "holm"), ("bh", "fdr_bh"),
+                                  ("bonferroni", "bonferroni"), ("by", "fdr_by")):
             exp = np.full_like(pval, np.nan)
             for col in range(pval.shape[1]):
                 valid = ~np.isnan(pval[:, col])
@@ -522,7 +538,7 @@ class AdjustPvaluesTests(TestCase):
                          [np.nan, np.nan, 0.2],
                          [0.04, np.nan, 0.5]])
         original = pval.copy()
-        for method in ("bonferroni", "sidak", "fdr_by"):
+        for method in ("sidak", "holm-sidak"):
             exp = np.full_like(pval, np.nan)
             for col in (0, 2):
                 valid = ~np.isnan(pval[:, col])

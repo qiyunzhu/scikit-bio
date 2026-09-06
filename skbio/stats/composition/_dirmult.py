@@ -18,7 +18,7 @@ from ._utils import (
     _check_metadata,
     _check_grouping,
     _check_trt_ref_groups,
-    _check_p_adjust,
+    _adjust_pvalues,
     _build_dmatrix,
 )
 
@@ -183,11 +183,12 @@ def dirmult_ttest(
         draws provide more robust estimates of uncertainty for the log-fold changes and
         *p*-values. Default is 128.
     p_adjust : str, optional
-        Method to correct *p*-values for multiple comparisons. Options are
-        Holm-Boniferroni ("holm" or "holm-bonferroni") (default), Benjamini-Hochberg
-        ("bh", "fdr_bh" or "benjamini-hochberg"), or any method supported by
-        statsmodels' :func:`~statsmodels.stats.multitest.multipletests` function.
-        Case-insensitive. If None, no correction will be performed.
+        Method to correct *p*-values for multiple comparisons. Options are: Bonferroni
+        ("bonf"/"bonferroni"), Holm-Boniferroni ("holm"/"holm-bonferroni", default),
+        Benjamini-Hochberg ("bh"/"benjamini-hochberg"), and Benjamini-Yekutieli
+        ("by"/"benjamini-yekutieli"), or any method supported by statsmodels'
+        :func:`~statsmodels.stats.multitest.multipletests` function. Case-insensitive.
+        If None, no correction will be performed.
     seed : int, Generator or RandomState, optional
         A user-provided random seed or random generator instance for drawing from the
         Dirichlet distribution. See :func:`details <skbio.util.get_rng>`.
@@ -390,7 +391,7 @@ def dirmult_ttest(
 
     # Correct p-values for multiple comparison.
     if p_adjust is not None:
-        qval = _check_p_adjust(p_adjust)(pval)
+        qval = _adjust_pvalues(pval, p_adjust)
     else:
         qval = pval
     reject = qval <= 0.05
@@ -493,11 +494,12 @@ def dirmult_lme(
         Number of draws from the Dirichlet-multinomial posterior distribution.
         Default is 128.
     p_adjust : str, optional
-        Method to correct *p*-values for multiple comparisons. Options are
-        Holm-Boniferroni ("holm" or "holm-bonferroni") (default), Benjamini-Hochberg
-        ("bh", "fdr_bh" or "benjamini-hochberg"), or any method supported by
-        statsmodels' :func:`~statsmodels.stats.multitest.multipletests` function.
-        Case-insensitive. If None, no correction will be performed.
+        Method to correct *p*-values for multiple comparisons. Options are: Bonferroni
+        ("bonf"/"bonferroni"), Holm-Boniferroni ("holm"/"holm-bonferroni", default),
+        Benjamini-Hochberg ("bh"/"benjamini-hochberg"), and Benjamini-Yekutieli
+        ("by"/"benjamini-yekutieli"), or any method supported by statsmodels'
+        :func:`~statsmodels.stats.multitest.multipletests` function. Case-insensitive.
+        If None, no correction will be performed.
     seed : int, Generator or RandomState, optional
         A user-provided random seed or random generator instance for drawing from the
         Dirichlet distribution. See :func:`details <skbio.util.get_rng>`.
@@ -789,11 +791,9 @@ def dirmult_lme(
         x[mask] /= log2_
 
     # correct p-values for multiple comparison
-    # (only valid replicates are included)
+    # Each feature is a testing family; omit unestimable covariates.
     if p_adjust is not None:
-        func = _check_p_adjust(p_adjust)
-        qval = np.full(shape, np.nan)
-        qval[mask] = np.apply_along_axis(func, 1, pval[mask])
+        qval = _adjust_pvalues(pval, p_adjust, axis=1)
     else:
         qval = pval
 

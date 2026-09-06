@@ -6,16 +6,17 @@
 # The full license is in the file LICENSE.txt, distributed with this software.
 # ----------------------------------------------------------------------------
 
+from types import SimpleNamespace
 from unittest import TestCase, main
+from unittest.mock import patch
 
 import numpy as np
 import numpy.testing as npt
 import pandas as pd
 import pandas.testing as pdt
 
-from skbio.stats.composition._dirmult import (
-    dirmult_ttest, dirmult_lme, _welch_draw_stats,
-)
+from skbio.stats.composition import dirmult_ttest, dirmult_lme
+from skbio.stats.composition._dirmult import _welch_draw_stats
 
 
 class DirMultTTestTests(TestCase):
@@ -213,6 +214,39 @@ class DirMultTTestTests(TestCase):
                                self.reference, pseudocount=None)
         self.assertIsInstance(result, pd.DataFrame)
 
+    def test_dirmult_ttest_p_adjust(self):
+        from statsmodels.stats.multitest import multipletests
+
+        base = dirmult_ttest(self.table, self.grouping, self.treatment,
+                             self.reference, draws=4, seed=0, p_adjust=None)
+        for method in ("holm", "fdr_bh", "bonferroni", "fdr_by", "sidak"):
+            obs = dirmult_ttest(self.table, self.grouping, self.treatment,
+                                self.reference, draws=4, seed=0, p_adjust=method)
+            exp = base.copy()
+            exp["qvalue"] = multipletests(base["pvalue"], method=method)[1]
+            exp["Signif"] = ((exp["qvalue"] <= 0.05) &
+                             ((exp["CI(2.5)"] > 0) | (exp["CI(97.5)"] < 0)))
+            pdt.assert_frame_equal(obs, exp, rtol=1e-14, atol=0)
+
+    def test_dirmult_ttest_p_adjust_nan(self):
+        from statsmodels.stats.multitest import multipletests
+
+        def stats(trt, ref, n1, n2, diff, se, dof, work):
+            _welch_draw_stats(trt, ref, n1, n2, diff, se, dof, work)
+            dof[1] = np.nan  # One feature has an unestimable test statistic.
+
+        for method in ("holm", "fdr_bh", "bonferroni", "fdr_by", "sidak"):
+            with patch('skbio.stats.composition._dirmult._welch_draw_stats',
+                       side_effect=stats):
+                obs = dirmult_ttest(
+                    self.table, self.grouping, self.treatment, self.reference,
+                    draws=4, seed=0, p_adjust=method)
+            valid = obs["pvalue"].notna()
+            exp = multipletests(obs.loc[valid, "pvalue"], method=method)[1]
+            npt.assert_allclose(obs.loc[valid, "qvalue"], exp, rtol=1e-14)
+            self.assertTrue(np.isnan(obs["qvalue"].iloc[1]))
+            self.assertFalse(obs["Signif"].iloc[1])
+
     def test_dirmult_ttest_no_p_adjust(self):
         result = dirmult_ttest(self.table, self.grouping, self.treatment,
                                self.reference, p_adjust=None)
@@ -275,6 +309,50 @@ class DirMultLMETests(TestCase):
              "Covar2": [1,1,1,1,2,2],
              "Covar3": [1,2,1,2,1,2]},
             index=index)
+
+    def test_dirmult_lme_p_adjust(self):
+        from statsmodels.stats.multitest import multipletests
+
+        kwargs = dict(table=self.table, metadata=self.metadata,
+                      formula="Covar2 + Covar3", grouping="Covar1", draws=1, seed=0)
+        base = dirmult_lme(**kwargs, p_adjust=None)
+        for method in ("holm", "fdr_bh", "bonferroni", "fdr_by", "sidak"):
+            obs = dirmult_lme(**kwargs, p_adjust=method)
+            exp = base.copy()
+            for _, group in exp.groupby("FeatureID"):
+                exp.loc[group.index, "qvalue"] = multipletests(
+                    group["pvalue"], method=method)[1]
+            exp["Signif"] = pd.Series(
+                (exp["qvalue"] <= 0.05) &
+                ((exp["CI(2.5)"] > 0) | (exp["CI(97.5)"] < 0)), dtype="boolean")
+            pdt.assert_frame_equal(obs, exp, rtol=1e-14, atol=0)
+
+    def test_dirmult_lme_p_adjust_nan(self):
+        # Include an unestimable covariate and a feature whose fit fails entirely.
+        def fitted(pvalues):
+            return SimpleNamespace(
+                params=np.array([0., 1., 2.]),
+                pvalues=np.array([0.5, *pvalues]),
+                conf_int=lambda: np.array([[-1., 1.], [0.1, 0.3], [0.2, 0.4]]))
+
+        for method, qvalues in (
+                ("holm", [0.02, 0.04, np.nan, 0.02, 0.4, 0.4, np.nan, np.nan]),
+                ("bh", [0.02, 0.04, np.nan, 0.02, 0.3, 0.3, np.nan, np.nan]),
+                ("bonferroni", [0.02, 0.08, np.nan, 0.02, 0.4, 0.6,
+                                np.nan, np.nan])):
+            fits = [fitted([0.01, 0.04]), fitted([np.nan, 0.02]),
+                    fitted([0.2, 0.3]), np.linalg.LinAlgError()]
+            with patch('statsmodels.regression.mixed_linear_model.MixedLM.fit',
+                       side_effect=fits), self.assertWarnsRegex(
+                           UserWarning, "LME fit failed for 1 features"):
+                obs = dirmult_lme(
+                    self.table, self.metadata, formula="Covar2 + Covar3",
+                    grouping="Covar1", draws=1, seed=0, p_adjust=method)
+            npt.assert_allclose(obs["qvalue"], qvalues)
+            npt.assert_allclose(obs["pvalue"],
+                                [0.01, 0.04, np.nan, 0.02, 0.2, 0.3, np.nan, np.nan])
+            npt.assert_array_equal(obs["Reps"], [1, 1, 1, 1, 1, 1, 0, 0])
+            self.assertTrue(obs["Signif"].iloc[-2:].isna().all())
 
     def test_dirmult_lme_demo(self):
         # a regular analysis

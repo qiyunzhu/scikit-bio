@@ -30,7 +30,12 @@ from scipy.optimize import minimize
 from skbio.util import get_rng
 from skbio.table._tabular import _ingest_table, _aggregate_features
 from ._base import _check_composition
-from ._utils import _check_metadata, _check_p_adjust, _build_dmatrix
+from ._utils import (
+    _check_metadata,
+    _check_p_adjust,
+    _build_dmatrix,
+    _adjust_pvalues,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from skbio.util._typing import SeedLike
@@ -2782,92 +2787,92 @@ def _calc_pvalues(W, dof=None):
     return pval
 
 
-def _adjust_pvalues(pval, method, out=None):
-    """Adjust p-values for multiple-testing correction.
+# def _adjust_pvalues_old(pval, method, out=None):
+#     """Adjust p-values for multiple-testing correction.
 
-    This function applies FDR correction to non-NaN entries. This behavior matches R's
-    `p.adjust`, whereas statsmodels' `multipletests` has inconsistent behavior in some
-    methods.
+#     This function applies FDR correction to non-NaN entries. This behavior matches R's
+#     `p.adjust`, whereas statsmodels' `multipletests` has inconsistent behavior in some
+#     methods.
 
-    NaN p-values could emerge when there are NaN in dof, which in turn could happen if
-    there are less observed samples than covariates in some features. This issue is
-    independent from the zero values in the input data.
+#     NaN p-values could emerge when there are NaN in dof, which in turn could happen if
+#     there are less observed samples than covariates in some features. This issue is
+#     independent from the zero values in the input data.
 
-    Parameters
-    ----------
-    pval : ndarray of shape (n_features, n_covariates)
-        p-values.
-    out : ndarray, optional
-        Array in which to store adjusted p-values. May be the same array as ``pval``.
-        By default, allocate a new array.
+#     Parameters
+#     ----------
+#     pval : ndarray of shape (n_features, n_covariates)
+#         p-values.
+#     out : ndarray, optional
+#         Array in which to store adjusted p-values. May be the same array as ``pval``.
+#         By default, allocate a new array.
 
-    Returns
-    -------
-    qval : ndarray of shape (n_features, n_covariates)
-        q-values.
+#     Returns
+#     -------
+#     qval : ndarray of shape (n_features, n_covariates)
+#         q-values.
 
-    """
-    pval = np.asarray(pval)
-    valid = ~np.isnan(pval)
-    if out is None:
-        qval = np.full_like(pval, np.nan)
-    else:
-        qval = np.asarray(out)
-        if qval.shape != pval.shape:
-            raise ValueError("`out` must have the same shape as `pval`.")
-        if not np.can_cast(pval.dtype, qval.dtype, casting="same_kind"):
-            raise TypeError("`out` has an incompatible dtype.")
-        # If output doesn't alias the input, initialize invalid entries to NaN. When
-        # it does alias, those entries are already NaN and clearing the array first
-        # would destroy the p-values before adjustment.
-        if not np.shares_memory(qval, pval):
-            qval.fill(np.nan)
-    # Holm and Benjamini-Hochberg are the documented/common choices. Their formulas
-    # are simple enough to apply directly, avoiding repeated statsmodels dispatch and
-    # validation overhead for every covariate. Processing one column at a time keeps
-    # scratch space O(n_features), rather than allocating another full result matrix.
-    key = None if method is None else str(method).lower()
-    holm = key in {"holm", "holm-bonferroni"}
-    bh = key in {"bh", "fdr_bh", "benjamini-hochberg"}
+#     """
+#     pval = np.asarray(pval)
+#     valid = ~np.isnan(pval)
+#     if out is None:
+#         qval = np.full_like(pval, np.nan)
+#     else:
+#         qval = np.asarray(out)
+#         if qval.shape != pval.shape:
+#             raise ValueError("`out` must have the same shape as `pval`.")
+#         if not np.can_cast(pval.dtype, qval.dtype, casting="same_kind"):
+#             raise TypeError("`out` has an incompatible dtype.")
+#         # If output doesn't alias the input, initialize invalid entries to NaN. When
+#         # it does alias, those entries are already NaN and clearing the array first
+#         # would destroy the p-values before adjustment.
+#         if not np.shares_memory(qval, pval):
+#             qval.fill(np.nan)
+#     # Holm and Benjamini-Hochberg are the documented/common choices. Their formulas
+#     # are simple enough to apply directly, avoiding repeated statsmodels dispatch and
+#     # validation overhead for every covariate. Processing one column at a time keeps
+#     # scratch space O(n_features), rather than allocating another full result matrix.
+#     key = None if method is None else str(method).lower()
+#     holm = key in {"holm", "holm-bonferroni"}
+#     bh = key in {"bh", "fdr_bh", "benjamini-hochberg"}
 
-    if key is None:
-        if not np.shares_memory(qval, pval):
-            np.copyto(qval, pval)
-        return qval
+#     if key is None:
+#         if not np.shares_memory(qval, pval):
+#             np.copyto(qval, pval)
+#         return qval
 
-    if holm or bh:
-        cols = (None,) if pval.ndim == 1 else range(pval.shape[1])
-        for col in cols:
-            pcol = pval if col is None else pval[:, col]
-            qcol = qval if col is None else qval[:, col]
-            valid_idx = np.flatnonzero(~np.isnan(pcol))
-            n = valid_idx.size
-            if not n:
-                continue
+#     if holm or bh:
+#         cols = (None,) if pval.ndim == 1 else range(pval.shape[1])
+#         for col in cols:
+#             pcol = pval if col is None else pval[:, col]
+#             qcol = qval if col is None else qval[:, col]
+#             valid_idx = np.flatnonzero(~np.isnan(pcol))
+#             n = valid_idx.size
+#             if not n:
+#                 continue
 
-            values = pcol[valid_idx]
-            order = np.argsort(values)
-            adjusted = values[order]
-            if holm:
-                adjusted *= n - np.arange(n)
-                np.maximum.accumulate(adjusted, out=adjusted)
-            else:
-                adjusted /= np.arange(1, n + 1) / float(n)
-                adjusted[:] = np.minimum.accumulate(adjusted[::-1])[::-1]
-            np.minimum(adjusted, 1.0, out=adjusted)
-            qcol[valid_idx[order]] = adjusted
-        return qval
+#             values = pcol[valid_idx]
+#             order = np.argsort(values)
+#             adjusted = values[order]
+#             if holm:
+#                 adjusted *= n - np.arange(n)
+#                 np.maximum.accumulate(adjusted, out=adjusted)
+#             else:
+#                 adjusted /= np.arange(1, n + 1) / float(n)
+#                 adjusted[:] = np.minimum.accumulate(adjusted[::-1])[::-1]
+#             np.minimum(adjusted, 1.0, out=adjusted)
+#             qcol[valid_idx[order]] = adjusted
+#         return qval
 
-    # Preserve support for every other method accepted by `_check_p_adjust`.
-    func = _check_p_adjust(method)
-    if pval.ndim == 1:
-        qval[valid] = func(pval[valid])
-    else:
-        for col in range(pval.shape[1]):
-            valid_col = valid[:, col]
-            qval[valid_col, col] = func(pval[valid_col, col])
+#     # Preserve support for every other method accepted by `_check_p_adjust`.
+#     func = _check_p_adjust(method)
+#     if pval.ndim == 1:
+#         qval[valid] = func(pval[valid])
+#     else:
+#         for col in range(pval.shape[1]):
+#             valid_col = valid[:, col]
+#             qval[valid_col, col] = func(pval[valid_col, col])
 
-    return qval
+#     return qval
 
 
 class ANCOMBCResult:

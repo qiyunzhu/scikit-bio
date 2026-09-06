@@ -131,6 +131,7 @@ def _check_p_adjust(name):
     name_ = name.lower()
 
     # Original options are kept for backwards compatibility
+    # TODO: This is now not necessary
     if name_ in ("holm", "holm-bonferroni"):
         name_ = "holm"
     if name_ in ("bh", "fdr_bh", "benjamini-hochberg"):
@@ -166,73 +167,111 @@ def _check_p_adjust(name):
 
 
 def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
-    """Adjust p-values independently along an axis, omitting NaNs.
+    """Perform multiple testing correction of p-values.
 
     Parameters
     ----------
-    pval : array_like
+    pval : array_like of float
         Real p-values in [0, 1], optionally containing NaNs.
     method : str or None, optional
-        ``"holm"`` or ``"bh"`` (default), including aliases accepted by
-        `_check_p_adjust`. Other methods fall back to statsmodels. None copies
-        the input without adjustment.
+        Method to correct p-values. Options are: Bonferroni ("bonf" or "bonferroni"),
+        Holm-Boniferroni ("holm" or "holm-bonferroni"), Benjamini-Hochberg ("bh" or
+        "benjamini-hochberg") (default), and Benjamini-Yekutieli ("by" or
+        "benjamini-yekutieli"), or any method supported by statsmodels' `multipletests`
+        function. Case-insensitive. If None, no correction will be performed.
     axis : int or None, optional
-        Testing-family axis (default 0). None treats all entries as one family.
-        Output shape and order are preserved.
-    out : ndarray, optional
-        Output buffer with the same shape and dtype as the default result.
-        May be `pval` itself; other overlapping views are not supported.
+        Axis along which correction will be performed. Each vector on this axis is
+        considered as an independent family of p-values. Default is 0. If None, the
+        entire array is treated as one family.
+    out : ndarray of float, optional
+        Location to store the result. Must have the same shape and data type as `pval`.
+        Can be `pval` itself for in-place correction. If not provided, a new array will
+        be allocated.
 
     Returns
     -------
-    ndarray
-        Adjusted p-values, retaining NaNs in their original positions. Floating
-        input dtype is preserved; integer input produces float64. Returns `out`
-        if supplied.
+    ndarray of float
+        Corrected p-values, preserving the shape, floating data type and NaN values of
+        the input. Returns `out` if supplied.
 
     Notes
     -----
-    Inputs are assumed valid. Each family counts only non-NaN entries, matching
-    R's default ``p.adjust`` behavior. Families are processed separately to keep
-    scratch space proportional to one family's length. Holm and BH reuse rank
-    factors across dense slices; missing entries change the family size.
+    This function corrects p-values independently along an axis within an N-dimensional
+    array. The expected use cases involve large feature-by-covariate matrices, in which
+    p-values of each covariate are to be corrected independently.
+
+    The algorithmic core is still iterative over individual families of p-values, rather
+    than full-array vectorization, which is memory inefficient. Certain calculations are
+    performed prior to iteration for re-use. Overall, this function is more efficient
+    than statsmodels' `multipletests`.
+
+    NaN p-values are omitted from the calculation. This behavior matches R's `p.adjust`,
+    whereas `multipletests` has inconsistent behavior in some methods. This is important
+    because ill-conditioned features and covariates often produce non-estimable model
+    parameters and p-values. When falling back to `multipletests`, only non-NaN p-values
+    are passed to it, ensuring consistent behavior.
 
     """
-    pval = np.asarray(pval)
-    dtype = pval.dtype if pval.dtype.kind == "f" else float
-    qval = np.empty_like(pval, dtype=dtype) if out is None else out
-    if method is None:
-        if qval is not pval:
-            qval[...] = pval
-        return qval
+    # As a future optimization path, batch calculation may be more efficient than
+    # per-family iteration. However, because the number of covariates is usually small
+    # compared with the number of features, this optimization may not be necessary.
 
+    # TODO: This function casts integer factors into float64 to prevent overflow when
+    # the input has a low-precision floating dtype (e.g., float16). This approach is
+    # safe with NumPy and CPU, but it needs revision when adopting GPU or Array API
+    # backends.
+
+    # TODO: array-like and array API adoption
+    pval = np.asarray(pval)
+    if not np.issubdtype(pval.dtype, np.floating):
+        raise TypeError("`pval` must have a floating-point data type.")
+    dtype = pval.dtype
+
+    # TODO: There should be a generic helper validating provided `out`.
+    if out is None:
+        out = np.empty_like(pval, dtype=dtype)
+
+    # No correction; just return input
+    if method is None:
+        if out is not pval:
+            out[...] = pval
+        return out
+
+    # Empty input
     if not pval.size:
-        return qval
+        return out
+
     size = pval.size if axis is None else pval.shape[axis]
+
+    # Determine built-in method, or fallback to statsmodels
     key = method.lower()
+    bonf = key in ("bonf", "bonferroni")
     holm = key in ("holm", "holm-bonferroni")
-    bh = key in ("bh", "fdr_bh", "benjamini-hochberg")
+    bh = key in ("bh", "benjamini-hochberg")
+    by = key in ("by", "benjamini-yekutieli")
     if holm:
         factors = np.arange(size, 0, -1, dtype=float)
-    elif bh:
+    elif bh or by:
         rank = np.arange(1, size + 1, dtype=float)
         factors = rank / size
-    else:
+        if by:
+            harmonic = np.cumsum(1 / rank)
+    elif not bonf:
         func = _check_p_adjust(method)
 
+    # Determine p-value family axis
     if axis is None:
-        slices = ((pval.ravel(), qval.flat),)
+        slices = ((pval.ravel(), out.flat),)
     else:
-        data = np.moveaxis(pval, axis, -1)
-        output = np.moveaxis(qval, axis, -1)
-        slices = ((data[idx], output[idx]) for idx in np.ndindex(data.shape[:-1]))
+        pval_ = np.moveaxis(pval, axis, -1)
+        qval_ = np.moveaxis(out, axis, -1)
+        slices = ((pval_[idx], qval_[idx]) for idx in np.ndindex(pval_.shape[:-1]))
 
     for col, dest in slices:
+        # Mask NaN values
         valid = ~np.isnan(col)
-        missing = not valid.all()
-        if missing:
-            # Gather before clearing the output to allow out=pval.
-            values = col[valid]
+        if missing := not valid.all():
+            values = col[valid]  # Gather before clearing the output to allow out=pval.
             dest[:] = np.nan
             if not values.size:
                 continue
@@ -240,7 +279,10 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
         else:
             values, result = col, dest
 
-        if holm or bh:
+        # Per-method calculation
+        if bonf:
+            result[:] = np.minimum(values * np.float64(values.size), 1)
+        elif holm or bh or by:
             n = values.size
             order = np.argsort(values)
             if holm:
@@ -251,13 +293,16 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
                 scale = factors if n == size else rank[:n] / n
                 adjusted = values[order] / scale
                 np.minimum.accumulate(adjusted[::-1], out=adjusted[::-1])
+                if by:
+                    adjusted *= harmonic[n - 1]
+                    np.minimum(adjusted, 1, out=adjusted)
             result[order] = adjusted
         else:
             result[:] = func(values)
 
         if missing:
             dest[valid] = result
-    return qval
+    return out
 
 
 def _check_grouping(grouping, matrix, samples=None):

@@ -165,6 +165,101 @@ def _check_p_adjust(name):
     return func
 
 
+def _adjust_pvalues(pval, method="bh", *, axis=0, out=None):
+    """Adjust p-values independently along an axis, omitting NaNs.
+
+    Parameters
+    ----------
+    pval : array_like
+        Real p-values in [0, 1], optionally containing NaNs.
+    method : str or None, optional
+        ``"holm"`` or ``"bh"`` (default), including aliases accepted by
+        `_check_p_adjust`. Other methods fall back to statsmodels. None copies
+        the input without adjustment.
+    axis : int or None, optional
+        Testing-family axis (default 0). None treats all entries as one family.
+        Output shape and order are preserved.
+    out : ndarray, optional
+        Output buffer with the same shape and dtype as the default result.
+        May be `pval` itself; other overlapping views are not supported.
+
+    Returns
+    -------
+    ndarray
+        Adjusted p-values, retaining NaNs in their original positions. Floating
+        input dtype is preserved; integer input produces float64. Returns `out`
+        if supplied.
+
+    Notes
+    -----
+    Inputs are assumed valid. Each family counts only non-NaN entries, matching
+    R's default ``p.adjust`` behavior. Families are processed separately to keep
+    scratch space proportional to one family's length. Holm and BH reuse rank
+    factors across dense slices; missing entries change the family size.
+
+    """
+    pval = np.asarray(pval)
+    dtype = pval.dtype if pval.dtype.kind == "f" else float
+    qval = np.empty_like(pval, dtype=dtype) if out is None else out
+    if method is None:
+        if qval is not pval:
+            qval[...] = pval
+        return qval
+
+    if not pval.size:
+        return qval
+    size = pval.size if axis is None else pval.shape[axis]
+    key = method.lower()
+    holm = key in ("holm", "holm-bonferroni")
+    bh = key in ("bh", "fdr_bh", "benjamini-hochberg")
+    if holm:
+        factors = np.arange(size, 0, -1, dtype=float)
+    elif bh:
+        rank = np.arange(1, size + 1, dtype=float)
+        factors = rank / size
+    else:
+        func = _check_p_adjust(method)
+
+    if axis is None:
+        slices = ((pval.ravel(), qval.flat),)
+    else:
+        data = np.moveaxis(pval, axis, -1)
+        output = np.moveaxis(qval, axis, -1)
+        slices = ((data[idx], output[idx]) for idx in np.ndindex(data.shape[:-1]))
+
+    for col, dest in slices:
+        valid = ~np.isnan(col)
+        missing = not valid.all()
+        if missing:
+            # Gather before clearing the output to allow out=pval.
+            values = col[valid]
+            dest[:] = np.nan
+            if not values.size:
+                continue
+            result = values
+        else:
+            values, result = col, dest
+
+        if holm or bh:
+            n = values.size
+            order = np.argsort(values)
+            if holm:
+                adjusted = values[order] * factors[-n:]
+                np.maximum.accumulate(adjusted, out=adjusted)
+                np.minimum(adjusted, 1, out=adjusted)
+            else:
+                scale = factors if n == size else rank[:n] / n
+                adjusted = values[order] / scale
+                np.minimum.accumulate(adjusted[::-1], out=adjusted[::-1])
+            result[order] = adjusted
+        else:
+            result[:] = func(values)
+
+        if missing:
+            dest[valid] = result
+    return qval
+
+
 def _check_grouping(grouping, matrix, samples=None):
     """Format grouping for differential abundance analysis.
 

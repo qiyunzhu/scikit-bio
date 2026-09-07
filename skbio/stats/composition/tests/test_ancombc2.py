@@ -39,6 +39,11 @@ from skbio.stats.composition._ancombc2 import (
     _calc_statistics,
     _calc_pvalues,
     _init_bias_params,
+    _r_fit_info,
+    _r_rebase_categorical,
+    _group_covmat,
+    _var_diff,
+    _safe_inverse_spd,
     _global_test,
     _global_stats,
     _constrain_est,
@@ -638,6 +643,86 @@ class CoreTests(TestCase):
         exp_var = np.array([[13.5, np.nan, 69.5], [31.5, 72.0, 108.5]])
         npt.assert_allclose(var_hat, exp_var, equal_nan=True)
 
+        # A full covariance matrix retains every adjusted variance on its diagonal.
+        var_hat = np.array([[1.0, 4.0], [9.0, 16.0]])
+        vcov_hat = np.zeros((2, 2, 2))
+        _adjust_variance(var_hat, vcov_hat, np.array([1.0, 4.0]), 0)
+        npt.assert_allclose(np.diagonal(vcov_hat, axis1=1, axis2=2), var_hat)
+
+    def test_statistical_helpers(self):
+        groups = np.array([0, 2])
+        beta = np.array([[1.0, 2.0, 3.0], [2.0, 3.0, 4.0]])
+        vcov = np.broadcast_to(np.eye(3), (2, 3, 3)).copy()
+
+        npt.assert_array_equal(_group_covmat(vcov, groups), vcov[:, groups][:, :, groups])
+        subcov = vcov[:, groups][:, :, groups]
+        self.assertIs(_group_covmat(subcov, groups), subcov)
+        self.assertEqual(_var_diff([[2.0, 0.5], [0.5, 3.0]]), 4.0)
+        self.assertEqual(_var_diff(np.eye(3)), 3.0)
+
+        observed = _global_test(groups, beta, vcov, p_adjust="holm")
+        self.assertEqual(observed[0].shape, (2,))
+        self.assertEqual(observed[1].shape, (2,))
+
+        W_global, pval = _global_stats(
+            groups, beta, vcov, estimable=np.zeros(beta.shape[0], dtype=bool)
+        )
+        npt.assert_array_equal(np.isnan(W_global), True)
+        npt.assert_array_equal(pval, 1.0)
+
+        W = np.array([[1.0, -2.0], [0.5, -0.5]])
+        pval, qval = _mdfdr_dunnett(
+            W, None, "holm", 4, 0.05, np.random.default_rng(0)
+        )
+        self.assertEqual(pval.shape, W.shape)
+        self.assertEqual(qval.shape, W.shape)
+
+    def test_numerical_fallbacks(self):
+        beta = np.array([1.0, -1.0])
+        contrast = np.array([[1.0, -1.0]])
+        with patch("skbio.stats.composition._ancombc2.minimize", side_effect=RuntimeError):
+            npt.assert_array_equal(_constrain_est(beta, np.eye(2), contrast), [0.0, 0.0])
+
+        singular = np.array([[1.0, 1.0], [1.0, 1.0]])
+        npt.assert_allclose(
+            _safe_inverse_spd(singular), np.linalg.inv(singular + 1e-8 * np.eye(2))
+        )
+
+    def test_core_parameter_validation(self):
+        for kwargs, message in (
+            ({"pseudocount": -1}, "Pseudocount"),
+            ({"var_quantile": -0.1}, "var_quantile"),
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, message):
+                    ancombc2(self.table2, self.meta2, "group", **kwargs)
+
+        with self.assertRaisesRegex(TypeError, "metadata column name"):
+            _validate_grouping(self.meta2, dmatrix("group", self.meta2), 1)
+
+    def test_core_estimability_guards(self):
+        n_features, n_covariates = self.data2.shape[1], self.dmat2.shape[1]
+        params = (
+            np.ones((n_features, n_covariates)),
+            np.zeros((n_covariates, n_features)),
+            np.zeros(self.data2.shape[0]),
+            None,
+            np.ones((n_features, n_covariates), dtype=bool),
+            np.full(n_features, n_covariates),
+        )
+        with (
+            patch("skbio.stats.composition._ancombc2._estimate_params", side_effect=[params, params]),
+            patch("skbio.stats.composition._ancombc2._estimate_bias_em", return_value=(0., 0., 0.)),
+            patch("skbio.stats.composition._ancombc2._sample_fractions", return_value=np.zeros(6)),
+        ):
+            result = ancombc2(self.table2, self.meta2, "group")
+        self.assertIsNone(result._estimable)
+
+        failed = (*params[:4], np.zeros((n_features, n_covariates), dtype=bool), params[5])
+        with patch("skbio.stats.composition._ancombc2._estimate_params", return_value=failed):
+            with self.assertRaisesRegex(ValueError, "No estimable features"):
+                ancombc2(self.table2, self.meta2, "group")
+
     def test_calc_residual(self):
         data = np.arange(20, dtype=float).reshape(4, 5)
         dmat = np.array(
@@ -658,6 +743,91 @@ class CoreTests(TestCase):
         exp = obs
         _calc_residual(obs := data.copy(), dmat, beta, target_bytes=32)
         npt.assert_allclose(obs, exp)
+
+        # An empty feature matrix does not require an allocation or calculation.
+        empty = np.empty((4, 0))
+        _calc_residual(empty, dmat, np.empty((2, 0)))
+        self.assertEqual(empty.shape, (4, 0))
+
+    def test_sparse_failed_fit_paths(self):
+        metadata = pd.DataFrame({"group": ["a"] * 2 + ["b"] * 2 + ["c"] * 2})
+        dmat = dmatrix("group", metadata)
+        data = np.arange(18, dtype=float).reshape(6, 3)
+        missing = np.zeros(data.shape, dtype=bool)
+        missing[:4, 0] = True
+        data[missing] = np.nan
+
+        # The first feature has only one observed categorical level, matching R's
+        # failed-fit behavior in both sparse solvers and direct fixed-point routes.
+        for batch in (None, 2):
+            with self.subTest(batch=batch):
+                var, beta, theta, cov, estimable, _ = _estimate_params_sparse(
+                    data.copy(), dmat, missing, True, direct=True, batch=batch
+                )
+                npt.assert_array_equal(estimable[0], False)
+                npt.assert_allclose(var[0], 0.1 * 6 * _lstsq_dense(dmat, True)[1] ** 2)
+                self.assertTrue(np.isfinite(beta[1:]).all())
+                self.assertTrue(np.isfinite(theta).all())
+                npt.assert_allclose(np.diagonal(cov[0]), var[0])
+
+        # The unbiased route omits sample-effect fitting altogether.
+        theta, _, _, _ = _lstsq_sparse(
+            data, dmat, missing, direct=False, biased=False
+        )
+        npt.assert_array_equal(theta, np.zeros(data.shape[0]))
+
+        # A deliberately strict threshold routes the batched direct solver through
+        # its stable full-SVD fallback.
+        theta, beta, _, _ = _lstsq_sparse_batch(
+            data, dmat, missing, direct=True, batch=2, max_cond=1
+        )
+        self.assertTrue(np.isfinite(theta).all())
+        self.assertTrue(np.isfinite(beta[1:]).all())
+
+    def test_r_fit_info_and_rebase_filtering(self):
+        metadata = pd.DataFrame({"group": ["a"] * 2 + ["b"] * 2 + ["c"] * 2})
+        dmat = dmatrix("group", metadata)
+        missing = np.zeros((6, 2), dtype=bool)
+        missing[:2, 0] = True
+        missing[:4, 1] = True
+
+        valid, rebases = _r_fit_info(dmat, missing)
+        npt.assert_array_equal(valid, [True, False])
+        self.assertEqual(len(rebases), 1)
+
+        beta = np.array([[1., 2., 3.], [4., 5., 6.]])
+        _r_rebase_categorical(beta, rebases, valid)
+        npt.assert_allclose(beta[0], [3., 0., 1.])
+        npt.assert_allclose(beta[1], [4., 5., 6.])
+
+        # Full-rank categorical coding takes the conservative non-rebasing path.
+        full_rank = dmatrix("group - 1", metadata)
+        valid, rebases = _r_fit_info(full_rank, missing)
+        npt.assert_array_equal(valid, [True, False])
+        self.assertEqual(rebases, ())
+
+        # A categorical main effect used in an interaction is checked but not rebased.
+        metadata["score"] = np.arange(len(metadata), dtype=float)
+        interaction = dmatrix("group * score", metadata)
+        valid, rebases = _r_fit_info(interaction, np.zeros((6, 1), dtype=bool))
+        self.assertIsNone(valid)
+        self.assertEqual(rebases, ())
+
+        # An interaction-only categorical term has no standalone main effect.
+        interaction = dmatrix("group:score", metadata)
+        valid, rebases = _r_fit_info(interaction, np.zeros((6, 1), dtype=bool))
+        self.assertIsNone(valid)
+        self.assertEqual(rebases, ())
+
+    def test_trend_test_default_rng(self):
+        groups = np.array([0, 1])
+        beta = np.array([[1.0, -1.0], [0.5, -0.5]])
+        var = np.ones_like(beta)
+        vcov = np.broadcast_to(np.eye(2), (2, 2, 2)).copy()
+
+        observed = _trend_test(groups, beta, var, vcov, bootstraps=2)
+        self.assertEqual(observed[0].shape, beta.shape)
+        self.assertEqual(observed[2].shape, (2,))
 
     def test_calc_residual_sparse(self):
         data = np.arange(20, dtype=float).reshape(4, 5)

@@ -2798,12 +2798,12 @@ class ANCOMBCResult:
         "_max_iter": 100,
         "_tol": 1e-5,
         "_pseudo": 0,
+        "_global_cache": None,
     }
 
     def __init__(self, result: pd.DataFrame, method: str, **kwargs):
         self._result = result
         self._method = method
-        self._global_cache = None
         for name, default in self._private_defaults.items():
             setattr(self, name, kwargs.get(name, default))
 
@@ -2847,10 +2847,10 @@ class ANCOMBCResult:
         valid = np.all(self._estimable[:, self._groups], axis=1)
         return None if np.all(valid) else valid
 
-    def _get_global_statistics(self):
+    def _get_global_stats(self):
         """Lazily cache statistics independent of alpha and p-value adjustment."""
         if self._global_cache is None:
-            self._global_cache = _global_statistics(
+            self._global_cache = _global_stats(
                 self._groups,
                 self._beta_hat,
                 self._vcov_hat,
@@ -2907,12 +2907,12 @@ class ANCOMBCResult:
             alpha=alpha,
             dof=self._dof,
             estimable=self._posthoc_estimable(),
-            global_statistics=self._get_global_statistics(),
+            global_stats=self._get_global_stats(),
         )
         result = pd.DataFrame(
-            {"W": W, "pvalue": pval, "qvalue": qval, "Signif": reject},
+            {"W": W.copy(), "pvalue": pval.copy(), "qvalue": qval, "Signif": reject},
             index=self._features,
-            copy=True,
+            copy=False,
         )
         result.index.name = "FeatureID"
         return result
@@ -2964,7 +2964,7 @@ class ANCOMBCResult:
         self._require_groups("pairwise_test")
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
 
-        raw = _pairwise_test(
+        beta, se, W, pval, qval, reject, comparisons = _pairwise_test(
             dmat=self._dmat,
             groups=self._groups,
             beta_hat=self._beta_hat,
@@ -2974,24 +2974,20 @@ class ANCOMBCResult:
             p_adjust=p_adjust,
             alpha=alpha,
             estimable=self._posthoc_estimable(),
-            global_statistics=self._get_global_statistics(),
+            global_stats=self._get_global_stats(),
         )
-        comp_names = raw["comp_names"]
-        n_comp = len(comp_names)
-        n_feats = len(self._features)
-        result = pd.DataFrame(
-            {
-                "FeatureID": [x for x in self._features for _ in range(n_comp)],
-                "Comparison": comp_names * n_feats,
-                "Log(FC)": raw["beta"].ravel(),
-                "SE": raw["se"].ravel(),
-                "W": raw["W"].ravel(),
-                "pvalue": raw["p_val"].ravel(),
-                "qvalue": raw["q_val"].ravel(),
-                "Signif": raw["reject"].ravel(),
-            }
+        index = pd.MultiIndex.from_product(
+            (self._features, comparisons), names=("FeatureID", "Comparison")
         )
-        result.set_index(["FeatureID", "Comparison"], inplace=True)
+        columns = {
+            "Log(FC)": beta.ravel(),
+            "SE": se.ravel(),
+            "W": W.ravel(),
+            "pvalue": pval.ravel(),
+            "qvalue": qval.ravel(),
+            "Signif": reject.ravel(),
+        }
+        result = pd.DataFrame(columns, index=index, copy=False)
         return result
 
     def dunnett_test(
@@ -3047,7 +3043,7 @@ class ANCOMBCResult:
         rng = get_rng(seed)
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
 
-        raw = _dunnett_test(
+        beta, se, W, pval, qval, reject, comparisons = _dunnett_test(
             dmat=self._dmat,
             groups=self._groups,
             beta_hat=self._beta_hat,
@@ -3059,22 +3055,18 @@ class ANCOMBCResult:
             alpha=alpha,
             estimable=self._posthoc_estimable(),
         )
-        comp_names = raw["comp_names"]
-        n_comp = len(comp_names)
-        n_feats = len(self._features)
-        result = pd.DataFrame(
-            {
-                "FeatureID": [x for x in self._features for _ in range(n_comp)],
-                "Comparison": comp_names * n_feats,
-                "Log(FC)": raw["beta"].ravel(),
-                "SE": raw["se"].ravel(),
-                "W": raw["W"].ravel(),
-                "pvalue": raw["p_val"].ravel(),
-                "qvalue": raw["q_val"].ravel(),
-                "Signif": raw["reject"].ravel(),
-            }
+        index = pd.MultiIndex.from_product(
+            (self._features, comparisons), names=("FeatureID", "Comparison")
         )
-        result.set_index(["FeatureID", "Comparison"], inplace=True)
+        columns = {
+            "Log(FC)": beta.ravel(),
+            "SE": se.ravel(),
+            "W": W.ravel(),
+            "pvalue": pval.ravel(),
+            "qvalue": qval.ravel(),
+            "Signif": reject.ravel(),
+        }
+        result = pd.DataFrame(columns, index=index)
         return result
 
     def trend_test(
@@ -3134,7 +3126,7 @@ class ANCOMBCResult:
         rng = get_rng(seed)
         alpha, p_adjust = self._stat_params(alpha, p_adjust)
 
-        raw = _trend_test(
+        _, _, W, pval, qval, reject = _trend_test(
             groups=self._groups,
             beta_hat=self._beta_hat,
             var_hat=self._var_hat,
@@ -3148,13 +3140,8 @@ class ANCOMBCResult:
             estimable=self._posthoc_estimable(),
         )
         result = pd.DataFrame(
-            {
-                "W": raw["W"],
-                "pvalue": raw["p_val"],
-                "qvalue": raw["q_val"],
-                "Signif": raw["reject"],
-            },
-            index=self._features,
+            {"W": W, "pvalue": pval, "qvalue": qval, "Signif": reject},
+            index=self._features,  # TODO: Add `copy=False` when safe
         )
         result.index.name = "FeatureID"
         return result
@@ -3176,21 +3163,19 @@ def _global_test(
     p_adjust="holm",
     dof=None,
     estimable=None,
-    global_statistics=None,
+    global_stats=None,
 ):
     """Perform ANCOM-BC global test, optionally reusing unadjusted statistics."""
-    if global_statistics is None:
-        global_statistics = _global_statistics(
-            groups, beta_hat, vcov_hat, dof, estimable
-        )
-    W_global, pval = global_statistics
+    if global_stats is None:
+        global_stats = _global_stats(groups, beta_hat, vcov_hat, dof, estimable)
+    W_global, pval = global_stats
     qval = _adjust_pvalues(pval, p_adjust)
     qval = np.where(np.isnan(qval), 1.0, qval)
     reject = qval <= alpha
     return W_global, pval, qval, reject
 
 
-def _global_statistics(groups, beta_hat, vcov_hat, dof=None, estimable=None):
+def _global_stats(groups, beta_hat, vcov_hat, dof=None, estimable=None):
     """Compute global statistics and raw p-values for a fitted model."""
     n_groups = groups.size
     beta_hat_sub = beta_hat[:, groups]
@@ -3202,11 +3187,7 @@ def _global_statistics(groups, beta_hat, vcov_hat, dof=None, estimable=None):
     if estimable is None:
         vcov_hat_sub_inv = np.linalg.pinv(vcov_hat_sub)
         W_global = np.einsum(
-            "ni,nij,nj->n",
-            beta_hat_sub,
-            vcov_hat_sub_inv,
-            beta_hat_sub,
-            optimize=True,
+            "ni,nij,nj->n", beta_hat_sub, vcov_hat_sub_inv, beta_hat_sub, optimize=True
         )
     else:
         estimable = np.asarray(estimable, dtype=bool)
@@ -3215,11 +3196,7 @@ def _global_statistics(groups, beta_hat, vcov_hat, dof=None, estimable=None):
             beta_valid = beta_hat_sub[estimable]
             vcov_valid_inv = np.linalg.pinv(vcov_hat_sub[estimable])
             W_global[estimable] = np.einsum(
-                "ni,nij,nj->n",
-                beta_valid,
-                vcov_valid_inv,
-                beta_valid,
-                optimize=True,
+                "ni,nij,nj->n", beta_valid, vcov_valid_inv, beta_valid, optimize=True
             )
 
     if dof is None:
@@ -3245,7 +3222,7 @@ def _pairwise_test(
     p_adjust="holm",
     alpha=0.05,
     estimable=None,
-    global_statistics=None,
+    global_stats=None,
 ):
     """ANCOM-BC2 pairwise directional test.
 
@@ -3306,19 +3283,11 @@ def _pairwise_test(
         alpha=alpha,
         dof_global=dof,
         estimable=estimable,
-        global_statistics=global_statistics,
+        global_stats=global_stats,
     )
     reject = qval <= alpha
 
-    return {
-        "beta": beta_pair,
-        "se": se_pair,
-        "W": W_pair,
-        "p_val": pval,
-        "q_val": qval,
-        "reject": reject,
-        "comp_names": all_names,
-    }
+    return beta_pair, se_pair, W_pair, pval, qval, reject, all_names
 
 
 def _mdfdr_pairwise(
@@ -3332,7 +3301,7 @@ def _mdfdr_pairwise(
     alpha,
     dof_global=None,
     estimable=None,
-    global_statistics=None,
+    global_stats=None,
 ):
     """Perform mixed directional FDR (mdFDR) correction for pairwise tests.
 
@@ -3355,7 +3324,7 @@ def _mdfdr_pairwise(
         alpha=alpha,
         dof=dof_global,
         estimable=estimable,
-        global_statistics=global_statistics,
+        global_stats=global_stats,
     )
     n_signs = signif.sum().item()  # R
 
@@ -3418,6 +3387,7 @@ def _dunnett_test(
     covariates = dmat.design_info.column_names
     beta_hat_dunn = beta_hat[:, groups]
     var_hat_dunn = var_hat[:, groups]
+    # TODO: This mutates the two arrays in-place and perhaps not safe?
     if estimable is not None:
         beta_hat_dunn[~estimable] = np.nan
         var_hat_dunn[~estimable] = np.nan
@@ -3425,7 +3395,7 @@ def _dunnett_test(
     W_dunn = beta_hat_dunn / se_hat_dunn
 
     # mdFDR correction
-    p_val, q_val = _mdfdr_dunnett(
+    pval, qval = _mdfdr_dunnett(
         W=W_dunn,
         dof=dof,
         fwer_ctrl=p_adjust,
@@ -3434,16 +3404,10 @@ def _dunnett_test(
         alpha=alpha,
         estimable=estimable,
     )
+    reject = qval <= alpha
+    comp_names = [covariates[i] for i in groups]
 
-    return {
-        "beta": beta_hat_dunn,
-        "se": se_hat_dunn,
-        "W": W_dunn,
-        "p_val": p_val,
-        "q_val": q_val,
-        "reject": q_val <= alpha,
-        "comp_names": [covariates[i] for i in groups],
-    }
+    return beta_hat_dunn, se_hat_dunn, W_dunn, pval, qval, reject, comp_names
 
 
 def _mdfdr_dunnett(W, dof, fwer_ctrl, bootstraps, alpha, rng, estimable=None):
@@ -3497,7 +3461,7 @@ def _dunn_global(W, bootstraps, dof, p_adjust, alpha, rng, estimable=None):
     W_global = np.max(np.abs(W), axis=1)
 
     # Only exceedance counts are needed, not the full bootstrap distribution.
-    exceedances = np.zeros(n_tax, dtype=np.int64)
+    exceed = np.zeros(n_tax, dtype=np.int64)
 
     for _ in range(bootstraps):
         # Generate null W from the per-feature t-distribution.
@@ -3510,10 +3474,10 @@ def _dunn_global(W, bootstraps, dof, p_adjust, alpha, rng, estimable=None):
         else:
             W_null = rng.standard_normal(size=W.shape)
 
-        exceedances += np.max(np.abs(W_null), axis=1) > W_global
+        exceed += np.max(np.abs(W_null), axis=1) > W_global
 
     # P-values from bootstrap
-    p_global = exceedances / bootstraps
+    p_global = exceed / bootstraps
     if estimable is not None:
         p_global[~np.asarray(estimable, dtype=bool)] = 1.0
 
@@ -3600,10 +3564,10 @@ def _trend_test(
 
     if rng is None:
         rng = np.random.default_rng()
-    exceedances = np.zeros(n_work, dtype=np.int64)
+    exceed = np.zeros(n_work, dtype=np.int64)
     var_work_dup = np.nan_to_num(var_work, nan=1.0)
     projections = {
-        name: _prepare_trend_projection(contrast)
+        name: _prep_trend_projection(contrast)
         for name, contrast in trend_contrast.items()
     }
 
@@ -3620,37 +3584,30 @@ def _trend_test(
                 np.abs(beta_null_opt[:, node]),
                 np.abs(beta_null_opt[:, node] - beta_null_opt[:, -1]),
             )
-        exceedances += np.max(l_null, axis=1) > W_work
+        exceed += np.max(l_null, axis=1) > W_work
 
-    p_work = exceedances / bootstraps
+    p_work = exceed / bootstraps
     if work_idx is None:
         W_trend = W_work
         beta_hat_trend = beta_trend_work
-        p_trend = p_work
+        pval = p_work
     else:
         W_trend = np.full(n_feats, np.nan, dtype=beta_hat.dtype)
         W_trend[work_idx] = W_work
         beta_hat_trend = np.full((n_feats, n_group), np.nan, dtype=beta_hat.dtype)
         beta_hat_trend[work_idx] = beta_trend_work
-        p_trend = np.ones(n_feats, dtype=beta_hat.dtype)
-        p_trend[work_idx] = p_work
+        pval = np.ones(n_feats, dtype=beta_hat.dtype)
+        pval[work_idx] = p_work
 
-    q_trend = _adjust_pvalues(p_trend, p_adjust)
-    q_trend = np.where(np.isnan(q_trend), 1.0, q_trend)
-    diff_trend = q_trend <= alpha
+    qval = _adjust_pvalues(pval, p_adjust)
+    qval = np.where(np.isnan(qval), 1.0, qval)
+    reject = qval <= alpha
 
     se = np.sqrt(np.maximum(var_hat_sub, 0))
     if estimable is not None:
         se[~estimable] = np.nan
 
-    return {
-        "beta": beta_hat_trend,
-        "se": se,
-        "W": W_trend,
-        "p_val": p_trend,
-        "q_val": q_trend,
-        "reject": diff_trend,
-    }
+    return beta_hat_trend, se, W_trend, pval, qval, reject
 
 
 def _constrain_est(beta_hat, vcov_hat, contrast):
@@ -3702,7 +3659,7 @@ def _constrain_est(beta_hat, vcov_hat, contrast):
         return np.zeros(n)
 
 
-def _prepare_trend_projection(contrast):
+def _prep_trend_projection(contrast):
     """Prepare active constraints and inverse Gram matrices for trend bootstraps.
 
     Keep the two matrix products separate when applying these operators to preserve
@@ -3729,7 +3686,7 @@ def _constrain_est_identity(beta_hat, contrast, projections=None):
     This is the identity-covariance specialization of :func:`_constrain_est` used by
     the trend bootstrap. It enumerates active constraint sets and evaluates all
     feature vectors simultaneously, avoiding repeated SLSQP calls. Pass operators
-    from :func:`_prepare_trend_projection` to reuse them across bootstrap draws.
+    from :func:`_prep_trend_projection` to reuse them across bootstrap draws.
     """
     beta_hat = np.asarray(beta_hat)
     contrast = np.asarray(contrast)
@@ -3743,7 +3700,7 @@ def _constrain_est_identity(beta_hat, contrast, projections=None):
         return np.array([_constrain_est(beta, identity, contrast) for beta in beta_hat])
 
     if projections is None:
-        projections = _prepare_trend_projection(contrast)
+        projections = _prep_trend_projection(contrast)
 
     candidates = []
     valid = []

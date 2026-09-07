@@ -40,10 +40,10 @@ from skbio.stats.composition._ancombc2 import (
     _calc_pvalues,
     _init_bias_params,
     _global_test,
-    _global_statistics,
+    _global_stats,
     _constrain_est,
     _constrain_est_identity,
-    _prepare_trend_projection,
+    _prep_trend_projection,
     _dunn_global,
     _trend_test,
     _mdfdr_dunnett,
@@ -1132,7 +1132,7 @@ class CoreTests(TestCase):
         self.assertIsNot(first, second)
         pdt.assert_frame_equal(first, second)
 
-    def test_global_statistics_cache(self):
+    def test_global_stats_cache(self):
         table = np.arange(1, 73, dtype=float).reshape(9, 8)
         metadata = pd.DataFrame({"group": ["a"] * 3 + ["b"] * 3 + ["c"] * 3})
         for fit in (ancombc, ancombc2):
@@ -1152,8 +1152,8 @@ class CoreTests(TestCase):
                             for method, alpha, adjust in calls]
                 result = fresh()
                 self.assertIsNone(result._global_cache)
-                with patch("skbio.stats.composition._ancombc2._global_statistics",
-                           wraps=_global_statistics) as calculate:
+                with patch("skbio.stats.composition._ancombc2._global_stats",
+                           wraps=_global_stats) as calculate:
                     for (method, alpha, adjust), exp in zip(calls, expected):
                         obs = getattr(result, method)(alpha=alpha, p_adjust=adjust)
                         pdt.assert_frame_equal(obs, exp)
@@ -1832,7 +1832,7 @@ class PostHocTests(TestCase):
             rng.standard_normal.side_effect = (
                 draws.copy() if estimable is None else draws[:, estimable].copy()
             )
-            obs = _trend_test(
+            _, _, _, obs_pval, obs_qval, _ = _trend_test(
                 np.arange(2), np.zeros((3, 2)), np.ones((3, 2)),
                 np.tile(np.eye(2), (3, 1, 1)), p_adjust=None,
                 trend_contrast={"positive": np.eye(2)},
@@ -1840,8 +1840,8 @@ class PostHocTests(TestCase):
                 estimable=estimable,
             )
             expected = [1 / 3, 2 / 3, 0. if estimable is None else 1.]
-            npt.assert_array_equal(obs["p_val"], expected)
-            npt.assert_array_equal(obs["q_val"], expected)
+            npt.assert_array_equal(obs_pval, expected)
+            npt.assert_array_equal(obs_qval, expected)
 
     def test_constrain_est_identity(self):
         beta_hat = np.array(
@@ -1862,7 +1862,7 @@ class PostHocTests(TestCase):
         beta = np.array([[-1., 2.], [3., -4.], [0., 0.]])
         # Redundant constraints exercise singular active-set Gram matrices.
         for contrast in (np.eye(2), np.array([[1., 0.], [1., 0.], [0., 1.]])):
-            projections = _prepare_trend_projection(contrast)
+            projections = _prep_trend_projection(contrast)
             with patch("numpy.linalg.pinv", side_effect=AssertionError(
                 "Prepared projections must not repeat the decomposition"
             )):
@@ -1872,14 +1872,14 @@ class PostHocTests(TestCase):
 
         # With no constraints, every coefficient vector is already feasible.
         contrast = np.empty((0, 2))
-        projections = _prepare_trend_projection(contrast)
+        projections = _prep_trend_projection(contrast)
         npt.assert_array_equal(
             _constrain_est_identity(beta, contrast, projections), beta
         )
 
         # Large systems retain the existing SLSQP fallback.
         contrast = np.tile(np.eye(2), (6, 1))
-        self.assertIsNone(_prepare_trend_projection(contrast))
+        self.assertIsNone(_prep_trend_projection(contrast))
         npt.assert_allclose(
             _constrain_est_identity(beta, contrast), np.maximum(beta, 0), atol=1e-8
         )

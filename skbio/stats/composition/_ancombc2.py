@@ -3465,10 +3465,10 @@ def _dunn_global(W, bootstraps, dof, p_adjust, alpha, rng, estimable=None):
     # Observed global statistic: max |W| per taxon
     W_global = np.max(np.abs(W), axis=1)
 
-    # Bootstrap null distribution
-    W_global_null = np.zeros((n_tax, bootstraps))
+    # Only exceedance counts are needed, not the full bootstrap distribution.
+    exceedances = np.zeros(n_tax, dtype=np.int64)
 
-    for b in range(bootstraps):
+    for _ in range(bootstraps):
         # Generate null W from the per-feature t-distribution.
         if dof is not None:
             dof_null = np.nan_to_num(dof, nan=999.0)
@@ -3479,10 +3479,10 @@ def _dunn_global(W, bootstraps, dof, p_adjust, alpha, rng, estimable=None):
         else:
             W_null = rng.standard_normal(size=W.shape)
 
-        W_global_null[:, b] = np.max(np.abs(W_null), axis=1)
+        exceedances += np.max(np.abs(W_null), axis=1) > W_global
 
     # P-values from bootstrap
-    p_global = np.mean(W_global_null > W_global[:, np.newaxis], axis=1)
+    p_global = exceedances / bootstraps
     if estimable is not None:
         p_global[~np.asarray(estimable, dtype=bool)] = 1.0
 
@@ -3569,10 +3569,10 @@ def _trend_test(
 
     if rng is None:
         rng = np.random.default_rng()
-    W_null = np.zeros((n_work, bootstraps))
+    exceedances = np.zeros(n_work, dtype=np.int64)
     var_work_dup = np.nan_to_num(var_work, nan=1.0)
 
-    for b in range(bootstraps):
+    for _ in range(bootstraps):
         beta_null = rng.standard_normal(size=(n_work, n_group))
         l_null = np.zeros((n_work, n_trend))
         for t_idx, (tname, contrast) in enumerate(trend_contrast.items()):
@@ -3583,9 +3583,9 @@ def _trend_test(
                 np.abs(beta_null_opt[:, node]),
                 np.abs(beta_null_opt[:, node] - beta_null_opt[:, -1]),
             )
-        W_null[:, b] = np.max(l_null, axis=1)
+        exceedances += np.max(l_null, axis=1) > W_work
 
-    p_work = np.mean(W_null > W_work[:, np.newaxis], axis=1)
+    p_work = exceedances / bootstraps
     if work_idx is None:
         W_trend = W_work
         beta_hat_trend = beta_trend_work

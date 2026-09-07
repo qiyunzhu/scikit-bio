@@ -7,7 +7,7 @@
 # ----------------------------------------------------------------------------
 
 from unittest import TestCase, main
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import numpy.testing as npt
@@ -42,6 +42,8 @@ from skbio.stats.composition._ancombc2 import (
     _global_test,
     _constrain_est,
     _constrain_est_identity,
+    _dunn_global,
+    _trend_test,
     _mdfdr_dunnett,
     _mdfdr_pairwise,
     _ancombc_core,
@@ -1769,6 +1771,43 @@ class Ancombc2Tests(TestCase):
 
 
 class PostHocTests(TestCase):
+
+    def test_dunn_bootstrap_counts(self):
+        # Ties do not count as exceedances; invalid features remain nonsignificant.
+        draws = np.array([[[1., 0.], [3., 0.], [1., 1.]],
+                          [[2., 0.], [2., 0.], [0., 0.]],
+                          [[0., 0.], [4., 0.], [3., 3.]]])
+        W = np.array([[1., 0.], [2., 0.], [np.nan, np.nan]])
+        for dof in (None, 10., np.array([10., 20., np.nan])):
+            rng = Mock()
+            rng.standard_normal.side_effect = draws.copy()
+            rng.standard_t.side_effect = draws.copy()
+            obs = _dunn_global(W, 3, dof, None, 0.05, rng,
+                               estimable=np.array([True, True, False]))
+            npt.assert_array_equal(obs["p_val"], [1 / 3, 2 / 3, 1.])
+            npt.assert_array_equal(obs["q_val"], obs["p_val"])
+            npt.assert_array_equal(obs["reject"], False)
+
+    def test_trend_bootstrap_counts(self):
+        # Projection onto the positive orthant gives exact ties at zero.
+        draws = np.array([[[0., 0.], [1., 2.], [-1., -1.]],
+                          [[1., 2.], [0., 0.], [0., 0.]],
+                          [[-1., -1.], [1., 2.], [-1., -1.]]])
+        for estimable in (None, np.array([True, True, False])):
+            rng = Mock()
+            rng.standard_normal.side_effect = (
+                draws.copy() if estimable is None else draws[:, estimable].copy()
+            )
+            obs = _trend_test(
+                np.arange(2), np.zeros((3, 2)), np.ones((3, 2)),
+                np.tile(np.eye(2), (3, 1, 1)), p_adjust=None,
+                trend_contrast={"positive": np.eye(2)},
+                trend_node={"positive": 1}, bootstraps=3, rng=rng,
+                estimable=estimable,
+            )
+            expected = [1 / 3, 2 / 3, 0. if estimable is None else 1.]
+            npt.assert_array_equal(obs["p_val"], expected)
+            npt.assert_array_equal(obs["q_val"], expected)
 
     def test_constrain_est_identity(self):
         beta_hat = np.array(

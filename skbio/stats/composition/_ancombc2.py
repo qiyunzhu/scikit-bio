@@ -806,9 +806,9 @@ def _ancombc_core(
     custom contrasts, whose coefficient bases require a joint transformation.
 
     The alternative mode `match_r=False` retains the Moore-Penrose fit instead and
-    suppresses only coefficients that are not uniquely estimable. Statistically, this
-    mode is more favorable. It is off by default to preserve the R behavior. But it is
-    worth further investigation.
+    suppresses only coefficients that are not uniquely estimable. This mode differs
+    from R's handling of rank deficiency. Its implications for bias estimation and
+    downstream inference require further validation.
 
     """
     # Validate parameters

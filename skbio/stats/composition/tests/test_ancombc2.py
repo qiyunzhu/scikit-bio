@@ -487,7 +487,7 @@ class CoreTests(TestCase):
         data[missing] = np.nan
 
         _, beta, estimable, _ = _lstsq_sparse_batch(
-            data, dmat, missing, False, batch=2, match_r=True, biased=False,
+            data, dmat, missing, False, batch=2, biased=False, match_r=True,
         )
         self.assertIsNone(estimable)
 

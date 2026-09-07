@@ -1104,7 +1104,10 @@ def _transform_data(data, pseudo=None, center=False):
             mean_ = np.mean(data, axis=0, keepdims=True)
         else:
             n_obs = data.shape[0] - np.sum(missing, axis=0, keepdims=True)
-            # n_obs = np.where(n_obs > 0, n_obs, 1)  # TODO: deal with empty features
+
+            # Avoid zero division warning by empty features
+            n_obs = np.where(n_obs > 0, n_obs, 1)
+
             mean_ = np.sum(data, axis=0, keepdims=True)
             mean_ /= n_obs
         data -= mean_
@@ -1209,7 +1212,7 @@ def _estimate_params_dense(data, dmat, groups=True, biased=True):
 
     # Calculate residuals = data - fitted data
     # The process below is equivalent to `data -= dmat @ beta` but saves memory by
-    # avoiding materializing the entire fitted matrix. TODO: Revisit.
+    # avoiding materializing the entire fitted matrix.
     _calc_residual(data, dmat, beta)
 
     # Estimate sample effects only in the initial fit. The final fit must retain
@@ -1281,15 +1284,7 @@ def _estimate_params_sparse(
     # exposed as statistical estimates.
     func = _lstsq_sparse_batch if batch else _lstsq_sparse
     theta, beta, estimable, rank = func(
-        data,
-        dmat,
-        missing,
-        direct,
-        batch,
-        tol,
-        max_iter,
-        match_r=match_r,
-        biased=biased,
+        data, dmat, missing, direct, batch, biased, match_r, tol, max_iter
     )
 
     # Calculate residuals
@@ -1360,10 +1355,10 @@ def _lstsq_sparse(
     missing,
     direct,
     batch=None,
+    biased=True,
+    match_r=True,
     tol=1e-2,
     max_iter=20,
-    match_r=True,
-    biased=True,
 ):
     """Fit missing-response models using full pseudoinverse.
 
@@ -1442,11 +1437,11 @@ def _lstsq_sparse_batch(
     missing,
     direct,
     batch=True,
+    biased=True,
+    match_r=True,
     tol=1e-2,
     max_iter=20,
     max_cond=1e4,
-    match_r=True,
-    biased=True,
 ):
     """Fit missing-response models with chunked SVD and compact spectral operators.
 
@@ -2542,13 +2537,7 @@ def _estimate_bias_var(beta, var_hat, params):
 
 
 def _sample_fractions(
-    data,
-    dmat,
-    beta,
-    delta_em,
-    missing=None,
-    estimable=None,
-    match_r=False,
+    data, dmat, beta, delta_em, missing=None, estimable=None, match_r=False
 ):
     """Estimate sampling fractions.
 
@@ -2636,30 +2625,20 @@ def _adjust_variance(var_hat, vcov_hat, var_delta, var_quantile, groups=None):
 
     Notes
     -----
-    This function updates `var_hat` and `vcov_hat` (if provided) in place.
-
+    This function updates `var_hat` and `vcov_hat` (if provided), and overwrites
+    `var_delta` in place.
     """
-    # var = var + delta + 2 * |var * delta|^0.5
-    var_delta_t = var_delta[None, :]
-    var_prod = var_hat * var_delta_t
-    # var and delta are both non-negative so this is not needed
-    # np.abs(var_prod, out=var_prod)
-    np.sqrt(var_prod, out=var_prod)
-    var_prod *= 2.0
-    var_hat += var_delta_t
-    var_hat += var_prod
-
-    # TODO: Simplified math: var = (var^0.5 + delta^0.5)^2; avoid allocating `var_prod`
-    # np.sqrt(var_hat, out=var_hat)
-    # np.sqrt(var_delta, out=var_delta)
-    # var_hat += var_delta[None, :]
-    # np.square(var_hat, out=var_hat)
+    # var = var + delta + 2 * |var * delta|^0.5 = (var^0.5 + delta^0.5)^2
+    np.sqrt(var_hat, out=var_hat)
+    np.sqrt(var_delta, out=var_delta)
+    var_hat += var_delta[None, :]
+    np.square(var_hat, out=var_hat)
 
     # Add a variance-stabilizing offset based on the requested quantile.
+    # The space of `var_delta` is reused to store the offset.
     if var_quantile:
-        # TODO: `var_delta` can be reused to replace `var_offset`
-        var_offset = np.nanquantile(var_hat, var_quantile, axis=0)
-        var_hat += var_offset[None, :]
+        np.nanquantile(var_hat, var_quantile, axis=0, out=var_delta)
+        var_hat += var_delta[None, :]
 
     # Keep a retained covariance tensor consistent with the adjusted variances.
     if vcov_hat is not None:
@@ -2708,10 +2687,8 @@ def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=Non
     Notes
     -----
     Each returned array has independent storage so it can be passed to pandas with
-    ``copy=False`` without later calculations changing an already constructed column.
+    `copy=False` without later calculations changing an already constructed column.
     """
-    # TODO: Pre-negate estimable
-
     # Coefficients (make a copy anyway because post-hoc tests will use `beta_hat`)
     lfc = beta_hat.copy()
     if estimable is not None:
@@ -2737,7 +2714,6 @@ def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=Non
     reject = qval <= alpha
 
     return lfc, se, W, pval, qval, reject
-    # return tuple(x.ravel() for x in (lfc, se, W, pval, qval, reject))
 
 
 def _calc_pvalues(W, dof=None):

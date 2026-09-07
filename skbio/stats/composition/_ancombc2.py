@@ -894,6 +894,8 @@ def _ancombc_core(
     # path calls the existing EM routine unchanged. Only when sparse feature-specific
     # models lose estimability do we subset those coefficient/variance pairs before EM.
     # This avoids putting NaN-aware reductions inside the dominant EM loop.
+    # TODO: Check for numerical failures caused by extreme data, such as constant
+    # abundance values, extremely large values, one varying feature, etc.
     bias = np.empty((n_covars, 3))
     for i in range(n_covars):
         if estimable is None:
@@ -2574,12 +2576,12 @@ def _sample_fractions(
         theta_hat = np.mean(data, axis=1)
         theta_hat -= dmat @ np.mean(beta, axis=1)
         theta_hat += dmat @ delta_em
+
+    # R's post-EM sampling-fraction calculation treats all-NA coefficients from a
+    # failed per-feature lm fit as contributing zero fitted value (rowSums(...,
+    # na.rm=TRUE)). Reproduce this in match-R mode, otherwise keep the Moore-Penrose
+    # fitted values.
     else:
-        # With feature-specific missingness the mean cannot be pulled through X @ beta.
-        # R's post-EM sampling-fraction calculation treats all-NA coefficients from a
-        # failed per-feature lm fit as contributing zero fitted value (rowSums(...,
-        # na.rm=TRUE)). Reproduce that only in R-compatibility mode; the
-        # coefficient-level mode deliberately keeps the Moore-Penrose fitted values.
         if match_r and estimable is not None:
             valid = np.all(estimable, axis=1)
             beta_work = beta.copy()
@@ -2594,12 +2596,6 @@ def _sample_fractions(
         intm -= data
         intm *= -1.0
         theta_hat = np.nanmean(intm, axis=1)
-
-    # Handle NaN in theta (samples with all-NaN residuals)
-    # TODO: This may not be necessary if empty samples are not allowed.
-    nan_theta = np.isnan(theta_hat)
-    if np.any(nan_theta):
-        theta_hat[nan_theta] = 0.0
 
     return theta_hat
 

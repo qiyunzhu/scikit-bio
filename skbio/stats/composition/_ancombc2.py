@@ -85,11 +85,12 @@ def ancombc(
         Significance level for the statistical tests. Must be in the range of (0, 1).
         Default is 0.05.
     p_adjust : str, optional
-        Method to correct *p*-values for multiple comparisons. Options are
-        Holm-Bonferroni ("holm" or "holm-bonferroni") (default), Benjamini-Hochberg
-        ("bh", "fdr_bh" or "benjamini-hochberg"), or any method supported by
-        statsmodels' :func:`~statsmodels.stats.multitest.multipletests` function.
-        Case-insensitive. If None, no correction will be performed.
+        Method to correct *p*-values for multiple comparisons. Options are: Bonferroni
+        ("bonf"/"bonferroni"), Holm-Boniferroni ("holm"/"holm-bonferroni", default),
+        Benjamini-Hochberg ("bh"/"benjamini-hochberg"), and Benjamini-Yekutieli
+        ("by"/"benjamini-yekutieli"), or any method supported by statsmodels'
+        :func:`~statsmodels.stats.multitest.multipletests` function. Case-insensitive.
+        If None, no correction will be performed.
 
     Returns
     -------
@@ -421,10 +422,12 @@ def ancombc2(
 ):
     r"""Perform differential abundance test using ANCOM-BC2.
 
-    Analysis of Compositions of Microbiomes with Bias Correction 2
-    (ANCOM-BC2) [1]_ extends ANCOM-BC by explicitly estimating sample-specific
-    sampling fractions, correcting the transformed abundance data by these estimates,
-    and refitting the model before inference.
+    Analysis of Compositions of Microbiomes with Bias Correction 2 (ANCOM-BC2) [1]_
+    extends ANCOM-BC by explicitly estimating sample-specific sampling fractions,
+    correcting the transformed abundance data by these estimates, and refitting the
+    model before inference.
+
+    .. versionadded:: 0.7.4
 
     Parameters
     ----------
@@ -465,11 +468,12 @@ def ancombc2(
         Significance level for the statistical tests. Must be in the range of (0, 1).
         Default is 0.05.
     p_adjust : str, optional
-        Method to correct *p*-values for multiple comparisons. Options are
-        Holm-Boniferroni ("holm" or "holm-bonferroni") (default), Benjamini-Hochberg
-        ("bh", "fdr_bh" or "benjamini-hochberg"), or any method supported by
-        statsmodels' :func:`~statsmodels.stats.multitest.multipletests` function.
-        Case-insensitive. If None, no correction will be performed.
+        Method to correct *p*-values for multiple comparisons. Options are: Bonferroni
+        ("bonf"/"bonferroni"), Holm-Boniferroni ("holm"/"holm-bonferroni", default),
+        Benjamini-Hochberg ("bh"/"benjamini-hochberg"), and Benjamini-Yekutieli
+        ("by"/"benjamini-yekutieli"), or any method supported by statsmodels'
+        :func:`~statsmodels.stats.multitest.multipletests` function. Case-insensitive.
+        If None, no correction will be performed.
 
     Returns
     -------
@@ -480,6 +484,33 @@ def ancombc2(
     --------
     ancombc : ANCOM-BC without explicit sampling-fraction correction.
     struc_zero : Standalone structural zero detection.
+
+    Notes
+    -----
+    This function is a Python re-implementation of the ANCOM-BC2 method [1]_, which was
+    originally implemented in the R package ``ANCOMBC``. This function provides an
+    efficient and scalable algorithm, with a simple interface consistent with other
+    scikit-bio components. The output of this function should match that of the R
+    package.
+
+    Comparing with the R command ``ancombc2``, which completes the entire workflow in
+    one go with extensive parameter settings, this function only executes the core
+    ANCOM-BC2 algorithm and reports the primary results, while:
+
+    1. Filtering of samples and features should be completed by the user prior to the
+       function call.
+
+    2. Post-hoc analyses (global test, pairwise test, Dunnett's test and trend test)
+       are available as methods of the result object.
+
+    3. The structural zero test is available as a standalone function
+       :func:`struc_zero`.
+
+    4. Pseudocount sensitivity analysis is performed by repeating function calls with
+       alternative ``pseudocount`` settings and merging the results.
+
+    A comprehensive tutorial on running the ANCOM-BC2 analysis and matching the R
+    workflow is provided in the "Examples" section below.
 
     References
     ----------
@@ -2656,7 +2687,7 @@ def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=Non
     alpha : float
         Significance level.
     p_adjust : str
-        FDR correction method.
+        Multiple testing correction method.
     dof : float or ndarray of shape (n_features,), optional
         Degrees of freedom.
     estimable : ndarray of bool of shape (n_features, n_covariates), optional
@@ -2874,11 +2905,11 @@ class ANCOMBCResult:
         Parameters
         ----------
         alpha : float or "inherit", optional
-            Significance level, or the value used by :func:`ancombc` or
-            :func:`ancombc2`. Default is "inherit".
+            Significance level. Default is "inherit", which will use the value supplied
+            upstream.
         p_adjust : str, optional
-            Multiple-testing correction method, or "inherit" to use the value
-            supplied upstream. Default is "inherit".
+            Multiple testing correction method. Default is "inherit", which will use
+            the *p*-value correction method supplied upstream.
 
         Returns
         -------
@@ -2929,8 +2960,8 @@ class ANCOMBCResult:
         Parameters
         ----------
         alpha : float or "inherit", optional
-            Significance level, or the value supplied upstream. Default is
-            "inherit".
+            Significance level. Default is "inherit", which will use the value supplied
+            upstream.
         p_adjust : str, optional
             Family wise error (FWER) controlling method. Default is "inherit", which
             will use the *p*-value correction method supplied upstream.
@@ -3002,8 +3033,8 @@ class ANCOMBCResult:
         Parameters
         ----------
         alpha : float or "inherit", optional
-            Significance level, or the value supplied upstream. Default is
-            "inherit".
+            Significance level. Default is "inherit", which will use the value supplied
+            upstream.
         p_adjust : str, optional
             Family wise error (FWER) controlling method. Default is "inherit", which
             will use the *p*-value correction method supplied upstream.
@@ -3086,13 +3117,13 @@ class ANCOMBCResult:
         Parameters
         ----------
         alpha : float or "inherit", optional
-            Significance level, or the value supplied upstream. Default is
-            "inherit".
+            Significance level. Default is "inherit", which will use the value supplied
+            upstream.
         p_adjust : str, optional
-            Multiple-testing correction method, or "inherit" to use the value
-            supplied upstream. Default is "inherit".
+            Multiple testing correction method. Default is "inherit", which will use
+            the *p*-value correction method supplied upstream.
         trend_contrast, trend_node : dict, optional
-            Trend-test contrast matrices and their node indices.
+            Trend test contrast matrices and their node indices.
         bootstraps : int, optional
             Number of bootstrap iterations. Default is 100.
         seed : int, Generator, or RandomState, optional

@@ -3571,12 +3571,18 @@ def _trend_test(
         rng = np.random.default_rng()
     exceedances = np.zeros(n_work, dtype=np.int64)
     var_work_dup = np.nan_to_num(var_work, nan=1.0)
+    projections = {
+        name: _prepare_trend_projection(contrast)
+        for name, contrast in trend_contrast.items()
+    }
 
     for _ in range(bootstraps):
         beta_null = rng.standard_normal(size=(n_work, n_group))
         l_null = np.zeros((n_work, n_trend))
         for t_idx, (tname, contrast) in enumerate(trend_contrast.items()):
-            beta_null_opt = _constrain_est_identity(beta_null, contrast)
+            beta_null_opt = _constrain_est_identity(
+                beta_null, contrast, projections[tname]
+            )
             beta_null_opt *= np.sqrt(np.maximum(var_work_dup, 0))
             node = trend_node[tname]
             l_null[:, t_idx] = np.maximum(
@@ -3665,12 +3671,34 @@ def _constrain_est(beta_hat, vcov_hat, contrast):
         return np.zeros(n)
 
 
-def _constrain_est_identity(beta_hat, contrast):
+def _prepare_trend_projection(contrast):
+    """Prepare active constraints and inverse Gram matrices for trend bootstraps.
+
+    Keep the two matrix products separate when applying these operators to preserve
+    the numerical behavior of the original projection. Large constraint systems use
+    SLSQP instead of enumerating exponentially many active sets.
+    """
+    contrast = np.asarray(contrast)
+    n_constraints = contrast.shape[0]
+    if n_constraints > 10:
+        return None
+
+    projections = [(None, None)]  # No active constraints.
+    for size in range(1, n_constraints + 1):
+        for active in combinations(range(n_constraints), size):
+            active_contrast = contrast[list(active)]
+            gram = active_contrast @ active_contrast.T
+            projections.append((active_contrast, np.linalg.pinv(gram)))
+    return tuple(projections)
+
+
+def _constrain_est_identity(beta_hat, contrast, projections=None):
     """Project coefficient vectors onto linear inequalities under identity covariance.
 
     This is the identity-covariance specialization of :func:`_constrain_est` used by
     the trend bootstrap. It enumerates active constraint sets and evaluates all
-    feature vectors simultaneously, avoiding repeated SLSQP calls.
+    feature vectors simultaneously, avoiding repeated SLSQP calls. Pass operators
+    from :func:`_prepare_trend_projection` to reuse them across bootstrap draws.
     """
     beta_hat = np.asarray(beta_hat)
     contrast = np.asarray(contrast)
@@ -3683,25 +3711,23 @@ def _constrain_est_identity(beta_hat, contrast):
         identity = np.eye(n_coefficients)
         return np.array([_constrain_est(beta, identity, contrast) for beta in beta_hat])
 
+    if projections is None:
+        projections = _prepare_trend_projection(contrast)
+
     candidates = []
     valid = []
 
-    for size in range(n_constraints + 1):
-        for active in combinations(range(n_constraints), size):
-            if active:
-                active_contrast = contrast[list(active)]
-                gram = active_contrast @ active_contrast.T
-                multipliers = -(beta_hat @ active_contrast.T @ np.linalg.pinv(gram))
-                candidate = beta_hat + multipliers @ active_contrast
-                active_valid = np.all(multipliers >= -1e-10, axis=1)
-            else:
-                candidate = beta_hat
-                active_valid = np.ones(n_features, dtype=bool)
+    for active_contrast, gram_inv in projections:
+        if active_contrast is not None:
+            multipliers = -(beta_hat @ active_contrast.T @ gram_inv)
+            candidate = beta_hat + multipliers @ active_contrast
+            active_valid = np.all(multipliers >= -1e-10, axis=1)
+        else:
+            candidate = beta_hat
+            active_valid = np.ones(n_features, dtype=bool)
 
-            candidates.append(candidate)
-            valid.append(
-                active_valid & np.all(contrast @ candidate.T >= -1e-10, axis=0)
-            )
+        candidates.append(candidate)
+        valid.append(active_valid & np.all(contrast @ candidate.T >= -1e-10, axis=0))
 
     candidates = np.asarray(candidates)
     valid = np.asarray(valid)

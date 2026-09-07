@@ -42,6 +42,7 @@ from skbio.stats.composition._ancombc2 import (
     _global_test,
     _constrain_est,
     _constrain_est_identity,
+    _prepare_trend_projection,
     _dunn_global,
     _trend_test,
     _mdfdr_dunnett,
@@ -1823,6 +1824,32 @@ class PostHocTests(TestCase):
         observed = _constrain_est_identity(beta_hat, contrast)
 
         npt.assert_allclose(observed, expected, atol=1e-8)
+
+    def test_prepared_trend_projection(self):
+        beta = np.array([[-1., 2.], [3., -4.], [0., 0.]])
+        # Redundant constraints exercise singular active-set Gram matrices.
+        for contrast in (np.eye(2), np.array([[1., 0.], [1., 0.], [0., 1.]])):
+            projections = _prepare_trend_projection(contrast)
+            with patch("numpy.linalg.pinv", side_effect=AssertionError(
+                "Prepared projections must not repeat the decomposition"
+            )):
+                for data in (beta, -beta):
+                    obs = _constrain_est_identity(data, contrast, projections)
+                    npt.assert_allclose(obs, np.maximum(data, 0), atol=1e-14)
+
+        # With no constraints, every coefficient vector is already feasible.
+        contrast = np.empty((0, 2))
+        projections = _prepare_trend_projection(contrast)
+        npt.assert_array_equal(
+            _constrain_est_identity(beta, contrast, projections), beta
+        )
+
+        # Large systems retain the existing SLSQP fallback.
+        contrast = np.tile(np.eye(2), (6, 1))
+        self.assertIsNone(_prepare_trend_projection(contrast))
+        npt.assert_allclose(
+            _constrain_est_identity(beta, contrast), np.maximum(beta, 0), atol=1e-8
+        )
 
     @patch("skbio.stats.composition._ancombc2._dunn_global")
     def test_mdfdr_dunnett(self, mock_dunn_global):

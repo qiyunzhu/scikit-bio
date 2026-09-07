@@ -964,11 +964,9 @@ def _ancombc_core(
             dof = n_samps - n_covars if n_samps > n_covars else np.nan
 
     # Calculate statistics
-    # TODO: Don't copy beta_hat and var_hat if not needed, especially when post-hoc
-    # is disabled. Also confirm any post-hoc doesn't mute them, such that they don't
-    # need a copy in any circumstance.
+    # Reuse fitting arrays when they are not needed for post-hoc analyses.
     lfc, se, W, pval, qval, reject = _calc_statistics(
-        beta_hat, var_hat, alpha, p_adjust, dof, estimable
+        beta_hat, var_hat, alpha, p_adjust, dof, estimable, inplace=groups is None
     )
 
     # Output primary results
@@ -991,20 +989,25 @@ def _ancombc_core(
 
     method = "ANCOM-BC" if not v2 else "ANCOM-BC2"
 
+    state = {}
+    if groups is not None:
+        state = dict(
+            _dmat=dmat,
+            _beta_hat=beta_hat,
+            _var_hat=var_hat,
+            _vcov_hat=vcov_hat,
+            _groups=groups,
+            _dof=dof,
+            _estimable=estimable,
+        )
     return ANCOMBCResult(
         result=res,
         method=method,
-        _dmat=dmat,
-        _beta_hat=beta_hat,
-        _var_hat=var_hat,
-        _vcov_hat=vcov_hat,
-        _groups=groups,
-        _dof=dof,
         _features=features,
         _covariates=covars,
         _p_adjust=p_adjust,
         _alpha=alpha,
-        _estimable=estimable,
+        **state,
     )
 
 
@@ -2646,7 +2649,9 @@ def _adjust_variance(var_hat, vcov_hat, var_delta, var_quantile, groups=None):
             vcov_hat[:, diag, diag] = var_hat[:, groups]
 
 
-def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=None):
+def _calc_statistics(
+    beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=None, inplace=False
+):
     """Calculate primary statistics, including estimability masking.
 
     Parameters
@@ -2664,6 +2669,9 @@ def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=Non
     estimable : ndarray of bool of shape (n_features, n_covariates), optional
         Whether each coefficient is uniquely identifiable. Non-estimable coefficients
         are reported with NaN estimates/statistics and unit p- and q-values.
+    inplace : bool, optional
+        If True, reuse `beta_hat` and `var_hat` for the returned coefficients and
+        standard errors, including estimability masking. Default is False.
 
     Returns
     -------
@@ -2685,19 +2693,18 @@ def _calc_statistics(beta_hat, var_hat, alpha, p_adjust, dof=None, estimable=Non
     Each returned array has independent storage so it can be passed to pandas with
     `copy=False` without later calculations changing an already constructed column.
     """
-    # Coefficients (make a copy anyway because post-hoc tests will use `beta_hat`)
-    lfc = beta_hat.copy()
+    lfc = beta_hat if inplace else beta_hat.copy()
     if estimable is not None:
         non_estimable = ~estimable
         lfc[non_estimable] = np.nan
 
     # Standard error = sqrt(variance)
-    se = np.sqrt(var_hat)
+    se = np.sqrt(var_hat, out=var_hat if inplace else None)
     if estimable is not None:
         se[non_estimable] = np.nan
 
     # Test statistic W = coef / s.e.
-    W = beta_hat / se
+    W = lfc / se
 
     # p-values (calculated by t-test or Z-test)
     # Non-estimables are set to 1, following R.
@@ -3384,9 +3391,10 @@ def _dunnett_test(
     Compare each group to the reference group with mdFDR correction.
     """
     covariates = dmat.design_info.column_names
+    # `groups` is an index array not a slice, so this will guarantee to create copies
+    # of data, therefore is safe.
     beta_hat_dunn = beta_hat[:, groups]
     var_hat_dunn = var_hat[:, groups]
-    # TODO: This mutates the two arrays in-place and perhaps not safe?
     if estimable is not None:
         beta_hat_dunn[~estimable] = np.nan
         var_hat_dunn[~estimable] = np.nan

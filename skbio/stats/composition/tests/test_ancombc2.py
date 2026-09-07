@@ -1091,6 +1091,47 @@ class CoreTests(TestCase):
         npt.assert_array_equal(np.isnan(qval), exp)
         npt.assert_array_equal(reject, np.full((2, 2), False))
 
+    def test_calc_statistics_inplace(self):
+        for dtype in (np.float32, np.float64):
+            for order in ("C", "F"):
+                beta = np.array([[1., -2.], [3., 4.]], dtype=dtype, order=order)
+                var = np.array([[4., 9.], [16., 25.]], dtype=dtype, order=order)
+                for mask in (None, np.array([[True, False], [True, True]])):
+                    expected = _calc_statistics(beta, var, .05, "holm",
+                                                estimable=mask)
+                    npt.assert_array_equal(beta, [[1., -2.], [3., 4.]])
+                    npt.assert_array_equal(var, [[4., 9.], [16., 25.]])
+                    work_beta, work_var = beta.copy(order=order), var.copy(order=order)
+                    observed = _calc_statistics(work_beta, work_var, .05, "holm",
+                                                estimable=mask, inplace=True)
+                    self.assertIs(observed[0], work_beta)
+                    self.assertIs(observed[1], work_var)
+                    for obs, exp in zip(observed, expected):
+                        npt.assert_array_equal(obs, exp)
+
+    def test_posthoc_retention(self):
+        rng = np.random.default_rng(12)
+        metadata = pd.DataFrame({"group": ["a"] * 4 + ["b"] * 4 + ["c"] * 4})
+        table = rng.integers(1, 20, size=(12, 20))
+        for fit in (ancombc, ancombc2):
+            plain = fit(table, metadata, "group")
+            grouped = fit(table, metadata, "group", grouping="group")
+            pdt.assert_frame_equal(plain.result, grouped.result)
+            for name in ("_beta_hat", "_var_hat", "_vcov_hat", "_dmat", "_dof",
+                         "_estimable", "_groups", "_global_cache"):
+                self.assertIsNone(getattr(plain, name))
+            for name in ("global_test", "pairwise_test", "dunnett_test", "trend_test"):
+                with self.assertRaisesRegex(ValueError, "requires a post-hoc grouping"):
+                    getattr(plain, name)()
+            # Editing the primary table cannot change retained model arrays.
+            beta, var = grouped._beta_hat.copy(), grouped._var_hat.copy()
+            expected = grouped.pairwise_test()
+            grouped.result.loc[:, "Log(FC)"] = 0.
+            grouped.result.loc[:, "SE"] = 0.
+            npt.assert_array_equal(grouped._beta_hat, beta)
+            npt.assert_array_equal(grouped._var_hat, var)
+            pdt.assert_frame_equal(grouped.pairwise_test(), expected)
+
     def test_calc_pvalues(self):
         W = np.array([[0.0, -1.0], [2.0, -3.0]])
 
@@ -1418,8 +1459,7 @@ class Ancombc2Tests(TestCase):
 
         res = ancombc2(table, grouping, "grouping")
         self.assertEqual(res._method, "ANCOM-BC2")
-        self.assertIsInstance(res._dmat, DesignMatrix)
-        self.assertEqual(res._dmat.design_info.column_names, ["Intercept", "grouping[T.treatment]"])
+        self.assertIsNone(res._dmat)
         self.assertIsNone(res._vcov_hat)
         with self.assertRaisesRegex(ValueError, "requires a post-hoc grouping"):
             res.global_test()
@@ -1482,10 +1522,8 @@ class Ancombc2Tests(TestCase):
 
         res = _ancombc_core(table, metadata, "group", v2=True, match_r=False)
 
-        self.assertTrue(np.isfinite(res._beta_hat).all())
-        npt.assert_array_equal(
-            res._estimable[-2:], [[True, False], [False, False]]
-        )
+        self.assertIsNone(res._beta_hat)
+        self.assertIsNone(res._estimable)
 
         # Only inferential output is suppressed. The reference-group intercept remains
         # estimable for a feature observed only in that group, whereas its group effect

@@ -40,6 +40,7 @@ from skbio.stats.composition._ancombc2 import (
     _calc_pvalues,
     _init_bias_params,
     _global_test,
+    _global_statistics,
     _constrain_est,
     _constrain_est_identity,
     _prepare_trend_projection,
@@ -1130,6 +1131,38 @@ class CoreTests(TestCase):
         second = res.global_test()
         self.assertIsNot(first, second)
         pdt.assert_frame_equal(first, second)
+
+    def test_global_statistics_cache(self):
+        table = np.arange(1, 73, dtype=float).reshape(9, 8)
+        metadata = pd.DataFrame({"group": ["a"] * 3 + ["b"] * 3 + ["c"] * 3})
+        for fit in (ancombc, ancombc2):
+            fitted = fit(table, metadata, "group", grouping="group", max_iter=2)
+            kwargs = {key: getattr(fitted, key) for key in fitted._private_defaults}
+
+            def fresh():
+                return ANCOMBCResult(fitted.result, fitted._method, **kwargs)
+
+            for methods in (("global_test", "pairwise_test"),
+                            ("pairwise_test", "global_test")):
+                calls = [(method, alpha, adjust)
+                         for alpha, adjust in ((0.05, "holm"), (0.5, "bh"),
+                                               (0.1, None))
+                         for method in methods]
+                expected = [getattr(fresh(), method)(alpha=alpha, p_adjust=adjust)
+                            for method, alpha, adjust in calls]
+                result = fresh()
+                self.assertIsNone(result._global_cache)
+                with patch("skbio.stats.composition._ancombc2._global_statistics",
+                           wraps=_global_statistics) as calculate:
+                    for (method, alpha, adjust), exp in zip(calls, expected):
+                        obs = getattr(result, method)(alpha=alpha, p_adjust=adjust)
+                        pdt.assert_frame_equal(obs, exp)
+                        # User edits must not change cached statistics or later calls.
+                        obs.loc[:, "W"] = -999.
+                        obs.loc[:, "pvalue"] = -999.
+                        again = getattr(result, method)(alpha=alpha, p_adjust=adjust)
+                        pdt.assert_frame_equal(again, exp)
+                    calculate.assert_called_once()
 
     def test_post_hoc_methods_inherit_fit_settings(self):
         table = pd.DataFrame(

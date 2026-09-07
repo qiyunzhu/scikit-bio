@@ -2803,6 +2803,7 @@ class ANCOMBCResult:
     def __init__(self, result: pd.DataFrame, method: str, **kwargs):
         self._result = result
         self._method = method
+        self._global_cache = None
         for name, default in self._private_defaults.items():
             setattr(self, name, kwargs.get(name, default))
 
@@ -2845,6 +2846,18 @@ class ANCOMBCResult:
             return None
         valid = np.all(self._estimable[:, self._groups], axis=1)
         return None if np.all(valid) else valid
+
+    def _get_global_statistics(self):
+        """Lazily cache statistics independent of alpha and p-value adjustment."""
+        if self._global_cache is None:
+            self._global_cache = _global_statistics(
+                self._groups,
+                self._beta_hat,
+                self._vcov_hat,
+                self._dof,
+                self._posthoc_estimable(),
+            )
+        return self._global_cache
 
     def global_test(
         self, alpha: float | str = "inherit", p_adjust: str = "inherit"
@@ -2894,10 +2907,12 @@ class ANCOMBCResult:
             alpha=alpha,
             dof=self._dof,
             estimable=self._posthoc_estimable(),
+            global_statistics=self._get_global_statistics(),
         )
         result = pd.DataFrame(
             {"W": W, "pvalue": pval, "qvalue": qval, "Signif": reject},
             index=self._features,
+            copy=True,
         )
         result.index.name = "FeatureID"
         return result
@@ -2959,6 +2974,7 @@ class ANCOMBCResult:
             p_adjust=p_adjust,
             alpha=alpha,
             estimable=self._posthoc_estimable(),
+            global_statistics=self._get_global_statistics(),
         )
         comp_names = raw["comp_names"]
         n_comp = len(comp_names)
@@ -3160,8 +3176,22 @@ def _global_test(
     p_adjust="holm",
     dof=None,
     estimable=None,
+    global_statistics=None,
 ):
-    """Perform ANCOM-BC global test."""
+    """Perform ANCOM-BC global test, optionally reusing unadjusted statistics."""
+    if global_statistics is None:
+        global_statistics = _global_statistics(
+            groups, beta_hat, vcov_hat, dof, estimable
+        )
+    W_global, pval = global_statistics
+    qval = _adjust_pvalues(pval, p_adjust)
+    qval = np.where(np.isnan(qval), 1.0, qval)
+    reject = qval <= alpha
+    return W_global, pval, qval, reject
+
+
+def _global_statistics(groups, beta_hat, vcov_hat, dof=None, estimable=None):
+    """Compute global statistics and raw p-values for a fitted model."""
     n_groups = groups.size
     beta_hat_sub = beta_hat[:, groups]
     vcov_hat_sub = _group_covmat(vcov_hat, groups)
@@ -3202,10 +3232,7 @@ def _global_test(
     if estimable is not None:
         pval[~estimable] = 1.0
 
-    qval = _adjust_pvalues(pval, p_adjust)
-    qval = np.where(np.isnan(qval), 1.0, qval)
-    reject = qval <= alpha
-    return W_global, pval, qval, reject
+    return W_global, pval
 
 
 def _pairwise_test(
@@ -3218,6 +3245,7 @@ def _pairwise_test(
     p_adjust="holm",
     alpha=0.05,
     estimable=None,
+    global_statistics=None,
 ):
     """ANCOM-BC2 pairwise directional test.
 
@@ -3278,6 +3306,7 @@ def _pairwise_test(
         alpha=alpha,
         dof_global=dof,
         estimable=estimable,
+        global_statistics=global_statistics,
     )
     reject = qval <= alpha
 
@@ -3303,6 +3332,7 @@ def _mdfdr_pairwise(
     alpha,
     dof_global=None,
     estimable=None,
+    global_statistics=None,
 ):
     """Perform mixed directional FDR (mdFDR) correction for pairwise tests.
 
@@ -3321,10 +3351,11 @@ def _mdfdr_pairwise(
         groups=groups,
         beta_hat=beta_hat,
         vcov_hat=vcov_hat,
-        p_adjust="BH",  # TODO: Question: Is "BH" hard-coded? Not inherit?
+        p_adjust="BH",  # Screening uses BH independently of pairwise correction.
         alpha=alpha,
         dof=dof_global,
         estimable=estimable,
+        global_statistics=global_statistics,
     )
     n_signs = signif.sum().item()  # R
 

@@ -125,11 +125,13 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
         Axis along which correction will be performed. Each vector on this axis is
         considered as an independent family of p-values. Default is 0. If None, the
         entire array is treated as one family.
-    n_tests : int, optional
-        Total number of hypotheses in each family, including unobserved tests.
+    n_tests : int or float, optional
+        Effective number of hypotheses in each family, including unobserved tests.
         Must be at least the non-NaN count of every family. If None, use each
-        family's non-NaN count. Unobserved tests behave as p-values of one.
-        Ignored when no correction is requested.
+        family's non-NaN count. Integer sizes correspond to padding with p-values
+        of one. Fractional sizes are supported for Bonferroni, Holm, BH and BY,
+        following R's `p.adjust`. Names dispatched to statsmodels require an
+        integer size. Ignored when no correction is requested.
     out : ndarray of float, optional
         Location to store the result. Must have the same shape and data type as `pval`.
         Can be `pval` itself for in-place correction. If not provided, a new array will
@@ -159,8 +161,9 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
     are passed to it, ensuring consistent behavior.
 
     With explicit `n_tests`, the native methods account for unobserved tests
-    without padding. BY uses H_n = digamma(n + 1) + Euler's constant, avoiding
-    a rank array of length `n_tests`. Fallback methods pad with ones.
+    without padding. BY uses H_floor(n) = digamma(floor(n) + 1) + Euler's
+    constant, matching R while avoiding a rank array of length `n_tests`.
+    Fallback methods pad with ones.
 
     """
     # As a future optimization path, batch calculation may be more efficient than
@@ -212,8 +215,14 @@ def _adjust_pvalues(pval, method="bh", *, axis=0, n_tests=None, out=None):
             else:
                 from scipy.special import digamma
 
-                harmonic = digamma(n_tests + 1) + np.euler_gamma
+                harmonic = digamma(np.floor(n_tests) + 1) + np.euler_gamma
     elif not bonf:
+        if n_tests is not None:
+            if n_tests != int(n_tests):
+                raise ValueError(
+                    f"Fractional `n_tests` is not supported for method {method!r}."
+                )
+            n_tests = int(n_tests)
         func = _sm_p_adjust(method)
 
     # Determine p-value family axis

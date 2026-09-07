@@ -3336,7 +3336,7 @@ def _mdfdr_pairwise(
     # Adjust each feature's comparisons with the family size inflated by
     # the global-screening factor n_feats / n_signs.
     if n_signs:
-        n_tests = n_comps * n_feats // n_signs
+        n_tests = n_comps * n_feats / n_signs
         q_val = _adjust_pvalues(p_val, fwer_ctrl, axis=1, n_tests=n_tests)
     else:
         q_val = np.ones_like(p_val)
@@ -3447,7 +3447,7 @@ def _mdfdr_dunnett(W, dof, fwer_ctrl, bootstraps, alpha, rng, estimable=None):
 
     # Step 3: Adjust each feature's comparisons using the inflated family size.
     if n_signs:
-        n_tests = n_comps * n_feats // n_signs
+        n_tests = n_comps * n_feats / n_signs
         q_val = _adjust_pvalues(p_val, fwer_ctrl, axis=1, n_tests=n_tests)
     else:
         q_val = np.ones_like(p_val)

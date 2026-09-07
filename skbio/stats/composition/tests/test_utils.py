@@ -521,7 +521,7 @@ class AdjustPvaluesTests(TestCase):
                                   ("bh", "fdr_bh"), ("by", "fdr_by"),
                                   ("sidak", "sidak"), ("hommel", "hommel")):
             for axis in (0, 1, None):
-                for n_tests in (5, 10):
+                for n_tests in (5, 10, 10.0):
                     exp = np.full_like(pval, np.nan)
                     if axis is None:
                         families = [(pval.ravel(), exp.reshape(-1))]
@@ -532,7 +532,7 @@ class AdjustPvaluesTests(TestCase):
                         valid = ~np.isnan(col)
                         n = valid.sum()
                         if n:
-                            padded = np.pad(col[valid], (0, n_tests - n),
+                            padded = np.pad(col[valid], (0, int(n_tests) - n),
                                             constant_values=1.)
                             dest[valid] = multipletests(padded, method=sm_method)[1][:n]
                     obs = _adjust_pvalues(pval, method, axis=axis, n_tests=n_tests)
@@ -542,6 +542,31 @@ class AdjustPvaluesTests(TestCase):
                         work, method, axis=axis, n_tests=n_tests, out=work), work)
                     npt.assert_allclose(work, exp, rtol=1e-14, atol=0)
         npt.assert_array_equal(pval, original)
+
+    def test_n_tests_fractional(self):
+        # R: p.adjust(c(.01, .02, .03), method, n = 7.5).
+        # BY uses sum(1 / (1:7.5)) = H_7, not a continuous harmonic number.
+        expected = {
+            "bonf": [0.075, 0.15, 0.225],
+            "holm": [0.075, 0.13, 0.165],
+            "bh": [0.075] * 3,
+            "by": [0.1944642857142857] * 3,
+        }
+        aliases = {"bonf": "bonferroni", "holm": "holm-bonferroni",
+                   "bh": "benjamini-hochberg", "by": "benjamini-yekutieli"}
+        for method, exp in expected.items():
+            for name in (method, aliases[method]):
+                pval = np.array([[0.03, np.nan, 0.01, 0.02]])
+                target = np.array([[exp[2], np.nan, exp[0], exp[1]]])
+                for axis in (1, None):
+                    work = pval.copy()
+                    obs = _adjust_pvalues(work, name, axis=axis, n_tests=7.5,
+                                         out=work)
+                    self.assertIs(obs, work)
+                    npt.assert_allclose(obs, target, rtol=1e-14)
+        for method in ("sidak", "hommel", "b", "h", "fdr_bh", "fdr_by"):
+            with self.assertRaisesRegex(ValueError, "Fractional `n_tests`"):
+                _adjust_pvalues(np.array([0.01]), method, n_tests=7.5)
 
     def test_n_tests_counts_and_clipping(self):
         pval = np.array([np.nan, 0.01, np.nan, 0.04, np.nan])

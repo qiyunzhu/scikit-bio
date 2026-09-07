@@ -1808,6 +1808,30 @@ class PostHocTests(TestCase):
         npt.assert_array_equal(obs_pval[1:], 1.0)
         npt.assert_allclose(obs_qval, exp_qval)
 
+    def test_mdfdr_fractional_families(self):
+        # Five features, two screened, three comparisons: effective size = 7.5.
+        selected = np.array([True, True, False, False, False])
+        W = np.tile(t.isf(np.array([0.01, 0.02, 0.03]) / 2, 10), (5, 1))
+        expected = {
+            "holm": [0.075, 0.13, 0.165],
+            "bonf": [0.075, 0.15, 0.225],
+            "bh": [0.075] * 3,
+            "by": [0.1944642857142857] * 3,
+        }
+        for method, exp in expected.items():
+            with patch("skbio.stats.composition._ancombc2._global_test",
+                       return_value=(None, None, None, selected)):
+                pair = _mdfdr_pairwise(
+                    W, 10., method, None, None, None, None, 0.05)
+            with patch("skbio.stats.composition._ancombc2._dunn_global",
+                       return_value=pd.DataFrame({"reject": selected})):
+                dunn = _mdfdr_dunnett(
+                    W, 10., method, 1, 0.05, np.random.default_rng(0))
+            for pval, qval in (pair, dunn):
+                npt.assert_allclose(qval[selected], np.tile(exp, (2, 1)))
+                npt.assert_array_equal(qval[~selected], 1.)
+                npt.assert_array_equal(pval[~selected], 1.)
+
     def test_mdfdr_inflated_families(self):
         from statsmodels.stats.multitest import multipletests
 

@@ -896,7 +896,7 @@ def _ancombc_core(
     # This avoids putting NaN-aware reductions inside the dominant EM loop.
     # TODO: Check for numerical failures caused by extreme data, such as constant
     # abundance values, extremely large values, one varying feature, etc.
-    bias = np.empty((n_covars, 3))
+    bias = np.empty((n_covars, 3), dtype=beta.dtype)
     for i in range(n_covars):
         if estimable is None:
             beta_i = beta[i]
@@ -2266,8 +2266,7 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
     # arrays during iteration. Technically, the arrays could have been pre-allocated
     # in the outer function `_ancombc_core` and re-used across covariates, which could
     # further enhance memory efficiency. It is left as-is for modularity.
-
-    # TODO: Should respect input float data type.
+    dtype = beta.dtype
 
     # The original R code has `na.rm = TRUE` in many commands. This is not necessary
     # in the current implementation, because the pre-correction coefficients (beta)
@@ -2285,8 +2284,8 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
     # Initial model parameters
     pi0, pi1, pi2 = 0.75, 0.125, 0.125  # weights of components (pi)
     delta, l1, l2, kappa1, kappa2 = _init_bias_params(beta)
-    params = np.array([pi0, pi1, pi2, delta, l1, l2, kappa1, kappa2])
-    updated = np.empty(8)
+    params = np.array([pi0, pi1, pi2, delta, l1, l2, kappa1, kappa2], dtype=dtype)
+    updated = np.empty(8, dtype=dtype)
 
     # Pre-allocate memory for intermediates. Each array has three rows, representing
     # the three components (0, 1, 2), and columns representing individual features.
@@ -2303,18 +2302,18 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
     # simplicity.
     n_feats = beta.shape[0]
     shape = (3, n_feats)
-    nu_inv = np.empty(shape)  # inverse of variances
-    inv_stdevs = np.empty(shape)  # inverse standard deviations
-    ratios = np.empty(shape)  # coefficients / variances
+    nu_inv = np.empty(shape, dtype=dtype)  # inverse of variances
+    sd_inv = np.empty(shape, dtype=dtype)  # inverse of standard deviations
+    ratios = np.empty(shape, dtype=dtype)  # coefficients / variances
 
     # Mean coefficients
-    means = np.empty(3)
+    means = np.empty(3, dtype=dtype)
 
     # Posterior probabilities of feature-component assignments (EM's responsibilities)
-    resp = np.empty(shape)
+    resp = np.empty(shape, dtype=dtype)
 
     # Just a 2-row array to store random data
-    intm = np.empty((2, n_feats))
+    intm = np.empty((2, n_feats), dtype=dtype)
     intm0, intm1 = intm
 
     # Initialize intermediates. The 1st row is constant, representing pre-correction
@@ -2322,7 +2321,7 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
     # NOTE: Making `var_hat` C-contiguous can further improve performance, but this is
     # marginal compared with the EM process.
     np.reciprocal(var_hat, out=nu_inv[0])
-    np.sqrt(nu_inv[0], out=inv_stdevs[0])
+    np.sqrt(nu_inv[0], out=sd_inv[0])
     np.divide(beta, var_hat, out=ratios[0])
 
     # Objective function for optimization of variance estimation. For fixed `loc` and
@@ -2348,7 +2347,7 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
         # Update intermediates (2nd and 3rd rows only)
         np.add(var_hat, params[6:8, None], out=intm)  # kappa1, kappa2
         np.reciprocal(intm, out=nu_inv[1:])
-        np.sqrt(nu_inv[1:], out=inv_stdevs[1:])
+        np.sqrt(nu_inv[1:], out=sd_inv[1:])
         np.subtract(beta, params[4:6, None], out=ratios[1:])  # means (l)
         ratios[1:] *= nu_inv[1:]
 
@@ -2368,7 +2367,7 @@ def _estimate_bias_em(beta, var_hat, tol=1e-5, max_iter=100):
         resp *= nu_inv
         resp *= -0.5
         np.exp(resp, out=resp)
-        resp *= inv_stdevs
+        resp *= sd_inv
         resp *= params[:3, None]  # weights (pi)
         resp /= np.sum(resp, axis=0, keepdims=True)
 

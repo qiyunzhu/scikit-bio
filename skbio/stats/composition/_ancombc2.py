@@ -883,18 +883,17 @@ def _ancombc_core(
     var_hat, beta, _, vcov_hat, estimable, _ = _estimate_params(
         data, dmat, None if v2 else groups, missing, True, v2, match_r
     )
-    # ``None`` is the fast-path sentinel used below. Sparse full-rank datasets should
-    # pay no masking/allocation cost in the dominant EM loop.
+
+    # `None` enables a fast path without masking/allocation.
     if estimable is not None and np.all(estimable):
         estimable = None
 
     # Estimate and correct for sampling bias via expectation-maximization (EM).
     # beta: (n_covariates, n_features); iterate over covariates (rows).
-    #
-    # Keep two concise paths for performance: the overwhelmingly common full-rank path
-    # calls the existing EM routine unchanged; only when sparse feature-specific models
-    # lose coefficient identifiability do we subset those coefficient/variance pairs
-    # before EM. This avoids putting NaN-aware reductions inside the dominant EM loop.
+    # Two concise paths are kept for performance: The overwhelmingly common full-rank
+    # path calls the existing EM routine unchanged. Only when sparse feature-specific
+    # models lose estimability do we subset those coefficient/variance pairs before EM.
+    # This avoids putting NaN-aware reductions inside the dominant EM loop.
     bias = np.empty((n_covars, 3))
     for i in range(n_covars):
         if estimable is None:
@@ -917,7 +916,6 @@ def _ancombc_core(
     if not v2:
         # Correct coefficients (logFC) according to estimated bias.
         beta_hat = beta.T - delta_em
-        estimable = estimable
         dof = None
 
     # ANCOM-BC2
@@ -944,9 +942,9 @@ def _ancombc_core(
         var_hat, beta_hat, _, vcov_hat, estimable, rank = _estimate_params(
             data, dmat, groups, missing, False, False, match_r
         )
-        beta_hat = beta_hat.T
         if estimable is not None and np.all(estimable):
             estimable = None
+        beta_hat = beta_hat.T
 
         # Adjust variances
         _adjust_variance(var_hat, vcov_hat, var_delta, var_quantile, groups)
@@ -1143,15 +1141,15 @@ def _estimate_params(
     missing : ndarray of shape (n_samples, n_features), or None
         Boolean mask of zero values in the pre-transformation data table, or None if
         the table is zero-free or a pseudocount was applied.
+    biased : bool, optional
+        Whether to estimate sample-specific biases (theta). Only the initial fit needs
+        this (True). ANCOM-BC2's final fit considers biases as already corrected and
+        theta = 0 (False).
     keep_data : bool, optional
         If True, the original data table will be kept intact. Relevant when `missing`
         is not provided (dense route). Sparse route always keeps the data table.
     match_r : bool, optional
         Rank-deficiency handling policy for sparse feature-specific regressions.
-    biased : bool, optional
-        Whether to estimate sample-specific biases (theta). Only the initial fit needs
-        this (True). ANCOM-BC2's final fit considers biases as already corrected and
-        theta = 0 (False).
 
     Returns
     -------
@@ -1183,10 +1181,9 @@ def _estimate_params(
         return _estimate_params_sparse(
             data, dmat, missing, groups, biased, match_r=match_r
         )
-    elif keep_data:
-        result = _estimate_params_dense(data.copy(), dmat, groups, biased)
-    else:
-        result = _estimate_params_dense(data, dmat, groups, biased)
+    if keep_data:
+        data = data.copy()
+    result = _estimate_params_dense(data, dmat, groups, biased)
     return (*result, None, None)
 
 
@@ -1237,11 +1234,11 @@ def _estimate_params_sparse(
     missing,
     groups=True,
     biased=True,
-    tol=1e-2,
-    max_iter=20,
+    match_r=True,
     direct=False,
     batch=True,
-    match_r=True,
+    tol=1e-2,
+    max_iter=20,
 ):
     """Estimate model parameters from a sparse matrix (with missing values).
 
@@ -1264,8 +1261,6 @@ def _estimate_params_sparse(
         Iteration tolerance. Default is 1e-2 (matching ANCOM-BC2).
     max_iter : int, optional
         Maximum number of iterations. Default is 20 (matching ANCOM-BC2).
-    biased : bool, optional
-        Estimate theta if True or set theta to 0 if False.
 
     Returns
     -------
@@ -1501,6 +1496,7 @@ def _lstsq_sparse_batch(
         S_inv = _invert_singular(S)
         Vh_all[start:stop] = Vh
         S_inv_all[start:stop] = S_inv
+
         # A coefficient beta_j is uniquely identifiable iff its coordinate vector e_j
         # lies in the row space of the feature-specific design. The diagonal of the
         # row-space projector V_r V_r.T gives this test using the SVD we already paid

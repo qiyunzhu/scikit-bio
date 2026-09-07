@@ -782,7 +782,7 @@ class CoreTests(TestCase):
         # Example 1 (RCLR transform)
         missing = self.data1 == 0
         data_tr = rclr(self.data1, axis=0, validate=False)
-        obs_var_hat, obs_beta, obs_theta, obs_beta_covmat, _, _ = (
+        obs_var_hat, obs_beta, obs_theta, obs_covmat, obs_esti, obs_rank = (
             _estimate_params_sparse(data_tr, self.dmat1, missing)
         )
         exp_var_hat = np.array(
@@ -803,7 +803,7 @@ class CoreTests(TestCase):
              [ 0.09796, -0.19649]]).T
         exp_theta = np.array(
             [-0.17764,  0.18778, -0.00845, -0.54944,  0.28287,  0.26657])
-        exp_beta_covmat = np.array(
+        exp_covmat = np.array(
             [[[ 0.14683, -0.14683], [-0.14683,  0.26361]],
              [[ 0.10253, -0.10253], [-0.10253,  0.12889]],
              [[ 0.33717, -0.33717], [-0.33717,  0.4007 ]],
@@ -814,21 +814,23 @@ class CoreTests(TestCase):
         npt.assert_array_equal(obs_var_hat.round(5), exp_var_hat)
         npt.assert_array_equal(obs_beta.round(5), exp_beta)
         npt.assert_array_equal(obs_theta.round(5), exp_theta)
-        npt.assert_array_equal(obs_beta_covmat.round(5), exp_beta_covmat)
+        npt.assert_array_equal(obs_covmat.round(5), exp_covmat)
+        self.assertIsNone(obs_esti)
+        npt.assert_array_equal(obs_rank, [2] * 7)
 
-        # Should match `_estimate_params` on non-zero data
+        # Should match `_estimate_params_dense` on non-zero data
         data_tr = np.log1p(self.data1)
-        obs_var_hat, obs_beta, obs_theta, obs_beta_covmat, _, _ = (
+        obs_var_hat, obs_beta, obs_theta, obs_covmat, _, _ = (
             _estimate_params_sparse(
                 data_tr, self.dmat1, np.full(self.data1.shape, False)
             )
         )
-        exp_var_hat, exp_beta, exp_theta, exp_beta_covmat = _estimate_params_dense(
+        exp_var_hat, exp_beta, exp_theta, exp_covmat = _estimate_params_dense(
             data_tr, self.dmat1)
         npt.assert_allclose(obs_var_hat, exp_var_hat, atol=1e-5)
         npt.assert_allclose(obs_beta, exp_beta, atol=1e-5)
         npt.assert_allclose(obs_theta, exp_theta, atol=1e-5)
-        npt.assert_allclose(obs_beta_covmat, exp_beta_covmat, atol=1e-5)
+        npt.assert_allclose(obs_covmat, exp_covmat, atol=1e-5)
 
         # Full and diagonal-only covariance paths agree for missing-value data too.
         data_tr = rclr(self.data1, axis=0, validate=False)
@@ -1445,7 +1447,7 @@ class Ancombc2Tests(TestCase):
         ]).flatten()
         npt.assert_array_equal(obs, exp)
 
-    def test_rank_deficient_coefficients(self):
+    def test_rank_deficient(self):
         # With pseudocount=0, each feature is fitted only on samples where it is
         # observed. A feature confined to one level of a categorical factor therefore
         # cannot necessarily identify every model coefficient.
@@ -1459,9 +1461,7 @@ class Ancombc2Tests(TestCase):
         nonref_only = np.array([0] * 6 + [4, 8, 6, 7, 9, 5])[:, None]
         features = [f"f{i}" for i in range(8)] + ["ref_only", "nonref_only"]
         table = pd.DataFrame(
-            np.hstack((common, ref_only, nonref_only)),
-            index=samples,
-            columns=features,
+            np.hstack((common, ref_only, nonref_only)), index=samples, columns=features
         )
 
         # The masked-design SVD identifies coefficient estimability essentially for
@@ -1618,9 +1618,7 @@ class Ancombc2Tests(TestCase):
         meta["bmi"] = pd.Categorical(meta["bmi"], categories=cats)
 
         # core test
-        res = ancombc2(
-            table, meta, formula="age + region + bmi", grouping="bmi"
-        )
+        res = ancombc2(table, meta, formula="age + region + bmi", grouping="bmi")
         obs = res.result
         exp = pd.read_table(get_data_path("pseq_sub_ancombc2_main.tsv"), index_col=(0, 1))
         exp["Signif"] = exp["Signif"].astype("boolean")
@@ -1691,13 +1689,7 @@ class Ancombc2Tests(TestCase):
         meta["bmi"] = pd.Categorical(meta["bmi"], categories=cats)
 
         fits = [
-            ancombc2(
-                table,
-                meta,
-                formula="age + region + bmi",
-                grouping="bmi",
-                pseudocount=pseudo,
-            )
+            ancombc2(table, meta, "age + region + bmi", "bmi", pseudocount=pseudo)
             for pseudo in (0, 0.1, 0.5, 1)
         ]
 

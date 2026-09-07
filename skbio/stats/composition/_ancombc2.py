@@ -1118,9 +1118,9 @@ def _estimate_params(
     match_r : bool, optional
         Rank-deficiency handling policy for sparse feature-specific regressions.
     biased : bool, optional
-        Whether to estimate sample-specific biases (theta) in the sparse route. Only
-        the initial fit needs this (True). ANCOM-BC2's final fit considers biases as
-        already corrected and theta = 0 (False).
+        Whether to estimate sample-specific biases (theta). Only the initial fit needs
+        this (True). ANCOM-BC2's final fit considers biases as already corrected and
+        theta = 0 (False).
 
     Returns
     -------
@@ -1153,13 +1153,13 @@ def _estimate_params(
             data, dmat, missing, groups, biased, match_r=match_r
         )
     elif keep_data:
-        result = _estimate_params_dense(data.copy(), dmat, groups)
+        result = _estimate_params_dense(data.copy(), dmat, groups, biased)
     else:
-        result = _estimate_params_dense(data, dmat, groups)
+        result = _estimate_params_dense(data, dmat, groups, biased)
     return (*result, None, None)
 
 
-def _estimate_params_dense(data, dmat, groups=True):
+def _estimate_params_dense(data, dmat, groups=True, biased=True):
     """Estimate model parameters from a dense matrix (no missing values).
 
     The original R code performs iterative maximum likelihood estimation to calculate
@@ -1169,6 +1169,9 @@ def _estimate_params_dense(data, dmat, groups=True):
     NumPy's `pinv`. We further noticed that both functions perform singular value
     decomposition (SVD). Therefore, the following code only performs SVD once, and
     uses the intermediates to calculate coefficients and inverse Gram matrix.
+
+    With ``biased=False``, sampling fractions have already been corrected, so
+    residuals are squared without further sample-wise centering.
 
     NOTE: This function overwrites the data table.
     """
@@ -1181,17 +1184,20 @@ def _estimate_params_dense(data, dmat, groups=True):
     # avoiding materializing the entire fitted matrix. TODO: Revisit.
     _calc_residual(data, dmat, beta)
 
-    # Calculate per-sample mean residuals (theta)
-    theta = np.mean(data, axis=1, keepdims=True)
+    # Estimate sample effects only in the initial fit. The final fit must retain
+    # the supplied correction, even if aggregation leaves nonzero mean residuals.
+    if biased:
+        theta = np.mean(data, axis=1)
+        data -= theta[:, None]
+    else:
+        theta = np.zeros(data.shape[0], dtype=data.dtype)
 
-    # Center and square residuals
-    data -= theta
     np.square(data, out=data)
 
     # Calculate variances and covariance matrix of coefficients
     var_hat, covmat = _calc_grouped_var_cov(data, dmat_inv.T, groups)
 
-    return var_hat, beta, theta.reshape(-1), covmat
+    return var_hat, beta, theta, covmat
 
 
 def _estimate_params_sparse(

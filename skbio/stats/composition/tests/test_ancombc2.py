@@ -21,6 +21,7 @@ from skbio.stats.composition import clr, rclr
 from skbio.stats.composition._ancombc2 import (
     _calc_residual,
     _calc_residual_sparse,
+    _estimate_params,
     _estimate_params_dense,
     _estimate_params_sparse,
     _lstsq_dense,
@@ -375,6 +376,26 @@ class CoreTests(TestCase):
         self.assertTupleEqual(obs_cov.shape, (
             data_tr.shape[1], len(groups), len(groups)))
         npt.assert_allclose(obs_cov, exp_cov[:, groups][:, :, groups])
+
+    def test_estimate_params_dense_corrected(self):
+        # Final fits retain the supplied sampling correction. For two samples per
+        # group, the sandwich variances of the group means are 0.5 and 2.
+        data = np.array([[1., 2.], [3., 6.], [5., 4.], [7., 8.]])
+        dmat = np.array([[1., 0.], [1., 0.], [1., 1.], [1., 1.]])
+        expected_cov = np.array([[[0.5, -0.5], [-0.5, 1.0]],
+                                 [[2.0, -2.0], [-2.0, 4.0]]])
+        for keep_data in (True, False):
+            with self.subTest(keep_data=keep_data):
+                work = data.copy()
+                var, beta, theta, cov, _, _ = _estimate_params(
+                    work, dmat, True, None, biased=False, keep_data=keep_data
+                )
+                npt.assert_allclose(beta, [[2., 4.], [4., 2.]])
+                npt.assert_allclose(var, [[0.5, 1.0], [2.0, 4.0]])
+                npt.assert_allclose(cov, expected_cov)
+                npt.assert_array_equal(theta, np.zeros(4))
+                if keep_data:
+                    npt.assert_array_equal(work, data)
 
     def test_estimate_params_grouped(self):
         # Covariance submatrices from grouped calculation should match the full matrix.

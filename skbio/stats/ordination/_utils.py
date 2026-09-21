@@ -211,16 +211,15 @@ def center_distance_matrix(distance_matrix, inplace=False, engine=None):
 
     Parameters
     ----------
-    distance_matrix : 2D array_like
+    distance_matrix : 2-D array_like
         Distance matrix.
     inplace : bool, optional
         Whether or not to center the given distance matrix in-place, which
         is more efficient in terms of memory and computation.
-    engine : {"cython", "numba"}, optional
-        Compute engine to use. ``"cython"`` (default) uses the Cython
-        implementation. ``"numba"`` uses the optional Numba implementation
-        and requires Numba to be installed. If not provided, the global
-        default is used (see :func:`skbio.set_config`).
+    engine : {'cython', 'numba', 'fast'}, optional
+        Compute engine for centering the distance matrix. If None (default), use the
+        global ``compute_engine`` setting. 'fast' selects Cython. See
+        :ref:`compute_engines` for details.
 
     """
     engine = _resolve_engine(engine, ("cython", "numba"))

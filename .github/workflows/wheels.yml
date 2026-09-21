@@ -49,7 +49,7 @@ jobs:
 
       - name: Build wheels
         # This may need to be updated for new Python versions, double check before release.
-        uses: pypa/cibuildwheel@v3.4.0
+        uses: pypa/cibuildwheel@v4.2.1
         env:
         # Run full tests on release, manual trigger, and schedule (twice a month). Otherwise (i.e. on PRs) do simple import/print test.
           CIBW_TEST_COMMAND: >

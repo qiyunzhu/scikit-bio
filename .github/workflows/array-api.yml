@@ -23,8 +23,8 @@ jobs:
       matrix:
         backend: [torch, jax]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.latest_python }}
 
@@ -46,7 +46,7 @@ jobs:
       - name: Generate coverage reports
         run: cd ci && coverage lcov --rcfile ../pyproject.toml
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: scikit-bio/scikit-bio

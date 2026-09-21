@@ -1,10 +1,9 @@
 # scikit-bio changelog
 
-## Version 0.7.4-dev
+## Version 0.7.4
 
 ### Features
 
-* Renamed the development-only global configuration option `engine` to `compute_engine`, including support for `"fast"`. Added `skbio.get_config()` to inspect all current settings and `skbio.reset_config()` to restore defaults. Centralized engine and runtime performance guidance in the documentation. `skbio.stats.ordination.pcoa` now honors the global Numba setting before considering optional binary acceleration.
 * Added `ancombc2` for ANCOM-BC2 differential abundance testing, with post-hoc analyses (global, pairwise, Dunnett and trend tests) through `ANCOMBCResult`. Thanks to @iiiime for the initial implementation ([#2572](https://github.com/scikit-bio/scikit-bio/pull/2572)).
 * Added `multi_align` progressive multiple sequence alignment, with and nucleotide and protein wrappers `multi_align_nucl` and `multi_align_prot` ([#2582](https://github.com/scikit-bio/scikit-bio/pull/2582)).
 * Added nucleotide transition probability matrices under `skbio.sequence.transition` for the JC69, K2P, F81, HKY85 and TN93 models. Thanks to @keder ([#2496](https://github.com/scikit-bio/scikit-bio/pull/2496)).
@@ -12,14 +11,16 @@
 * Added an optional Numba engine for `permanova`, `mantel`, `permdisp` and `pcoa`. Thanks to @LarytheLord for this and other contributions ([#2483](https://github.com/scikit-bio/scikit-bio/pull/2483), [#2508](https://github.com/scikit-bio/scikit-bio/pull/2508), [#2547](https://github.com/scikit-bio/scikit-bio/pull/2547)). See also [#2569](https://github.com/scikit-bio/scikit-bio/pull/2569), [#2523](https://github.com/scikit-bio/scikit-bio/pull/2523), [#2510](https://github.com/scikit-bio/scikit-bio/pull/2510).
 * Added option `engine="fast"` to `permanova`, `mantel`, `permdisp` and UniFrac metrics in `beta_diversity` to automatically select Numba when installed and Cython otherwise. Defaults are unchanged ([#2575](https://github.com/scikit-bio/scikit-bio/pull/2575), [#2581](https://github.com/scikit-bio/scikit-bio/pull/2581)).
 * Added Array API and GPU support for distance matrix storage and operations, `permanova`, `mantel` and `center_distance_matrix`. Added Numba GPU acceleration for PERMANOVA and Mantel on NVIDIA and AMD devices ([#2523](https://github.com/scikit-bio/scikit-bio/pull/2523)).
+* Added global configuration option `compute_engine` to provide centralized control of engines. Added `skbio.get_config()` to retrieve all current settings ([#2590](https://github.com/scikit-bio/scikit-bio/pull/2590)).
 * `TreeNode.prune` and `TreeNode.bifurcate` now return the resulting tree and accept `inplace=False` to operate on a copy. Thanks to @jissen706 for this and other contributions ([#2495](https://github.com/scikit-bio/scikit-bio/pull/2495)).
 
 ### Performance enhancements
 
+* Added a top-level documentation page "Computation and Performance", providing a guide to enhance performance ([#2590](https://github.com/scikit-bio/scikit-bio/pull/2590)).
 * Added parallel Numba computation of unweighted and weighted UniFrac distance matrices in `beta_diversity`. Thanks to @l1joseph for this and other contributions ([#2558](https://github.com/scikit-bio/scikit-bio/pull/2558)).
 * Accelerated `permanova` with parallel Numba kernels for square and condensed distance matrices ([#2488](https://github.com/scikit-bio/scikit-bio/pull/2488), [#2557](https://github.com/scikit-bio/scikit-bio/pull/2557)).
 * Accelerated `dirmult_ttest` by vectorizing Welch's t-test calculations and reusing sampling buffers ([#2561](https://github.com/scikit-bio/scikit-bio/pull/2561)).
-* Accelerated `dirmult_lme`'s default random-intercept model by fitting all features of a posterior draw at once from a closed-form profile likelihood, with the variance ratio found by a bounded golden-section search instead of one `MixedLM.fit` optimization per feature. Supplying `re_formula`, `vc_formula`, `model_kwargs`, `fit_method`, or `fit_converge` falls back to the previous per-feature path. Results can differ slightly where `MixedLM`'s optimizer previously stopped short of the optimum ([#2578](https://github.com/scikit-bio/scikit-bio/pull/2578)).
+* Accelerated `dirmult_lme`'s default random-intercept model by fitting all features at once in closed form, instead of executing `MixedLM.fit` optimization per feature ([#2578](https://github.com/scikit-bio/scikit-bio/pull/2578)).
 * Added efficient native implementations of Bonferroni, Holm, Benjamini-Hochberg and Benjamini-Yekutieli corrections for p-values. This improved the performance of differential abundance tests, including `ancom`, `ancombc`, `ancombc2`, `dirmult_ttest` and `dirmult_lme`. NaN p-values are excluded from each testing family, matching the behavior of R's `p.adjust`. Other p-value adjustment methods fall back to statsmodels ([#2572](https://github.com/scikit-bio/scikit-bio/pull/2572)).
 * Improved performance of `ancombc` ([#2572](https://github.com/scikit-bio/scikit-bio/pull/2572)).
 * `TabularMSA.from_path_seqs` now preserves metadata from the original sequences ([#2582](https://github.com/scikit-bio/scikit-bio/pull/2582)).

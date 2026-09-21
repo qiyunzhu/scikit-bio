@@ -12,7 +12,7 @@ from unittest.mock import patch
 import numpy as np
 from numpy.testing import assert_allclose
 
-from skbio import get_config, set_config, reset_config
+from skbio import get_config, set_config
 from skbio.stats.ordination import pcoa, center_distance_matrix
 from skbio._config import _resolve_engine
 from skbio.util import numba_code
@@ -21,7 +21,8 @@ from skbio.util import numba_code
 class TestOptions(TestCase):
     def setUp(self):
         self.original = get_config()
-        reset_config()
+        set_config("compute_engine", "cython")
+        set_config("table_output", "pandas")
 
     def tearDown(self):
         for option, value in self.original.items():
@@ -67,30 +68,11 @@ class TestOptions(TestCase):
         self.assertEqual(get_config("compute_engine"), "fast")
         self.assertNotIn("unknown", get_config())
 
-    def test_reset_one(self):
-        set_config("compute_engine", "fast")
-        set_config("table_output", "numpy")
-        reset_config("compute_engine")
-        self.assertEqual(get_config("compute_engine"), "cython")
-        self.assertEqual(get_config("table_output"), "numpy")
-        reset_config("table_output")
-        self.assertEqual(get_config("table_output"), "pandas")
-
-    def test_reset_all(self):
-        set_config("compute_engine", "numba")
-        set_config("table_output", "polars")
-        reset_config()
-        self.assertEqual(get_config(), {
-            "compute_engine": "cython", "table_output": "pandas"})
-        reset_config()
-        self.assertEqual(get_config("compute_engine"), "cython")
-
     def test_invalid_option_does_not_change_settings(self):
         for option in ("unknown", "engine"):
             before = get_config()
-            for action in (get_config, reset_config):
-                with self.assertRaisesRegex(KeyError, "Unknown option"):
-                    action(option)
+            with self.assertRaisesRegex(KeyError, "Unknown option"):
+                get_config(option)
             with self.assertRaisesRegex(KeyError, "Unknown option"):
                 set_config(option, "numba")
             self.assertEqual(get_config(), before)

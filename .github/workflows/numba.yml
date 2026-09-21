@@ -39,14 +39,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-15-intel and windows-11-arm are omitted: Numba and llvmlite
-        # do not ship wheels for those targets (macOS x86_64 or Windows ARM64),
-        # so `pip install numba` would fall back to a source build requiring an
-        # LLVM toolchain.
-        os: [ubuntu-latest, macos-latest, windows-latest, ubuntu-24.04-arm]
+        # macos-26-intel is omitted as it has been deprecated by Numba.
+        os: [ubuntu-latest, macos-latest, windows-latest, ubuntu-24.04-arm, windows-11-arm]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ needs.conf.outputs.latest_python }}
 
@@ -79,7 +76,7 @@ jobs:
           cd ci && coverage lcov --rcfile ../pyproject.toml
       - name: Upload coverage reports to Codecov
         if: runner.os == 'Linux' && runner.arch == 'X64'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: scikit-bio/scikit-bio

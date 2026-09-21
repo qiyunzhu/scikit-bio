@@ -466,13 +466,10 @@ def dirmult_lme(
     log-fold changes as well as their credible intervals, the *p*-values and
     the multiple comparison corrected *p*-values are reported.
 
-    This function uses the :class:`~statsmodels.regression.mixed_linear_model.MixedLM`
-    class from statsmodels.
-
-    .. note::
-        The default model is fitted in closed form for all features at once. See
-        Notes. Any other configuration falls back to running one numeric
-        optimization per feature per draw, which can take much longer to finish.
+    .. versionchanged:: 0.7.4
+        Significantly improved computational efficiency under the default configuration
+        by introducing an analytical kernel fitting all features at once. See Notes for
+        details.
 
     Parameters
     ----------
@@ -597,9 +594,11 @@ def dirmult_lme(
     feature separately with ``MixedLM``.
 
     .. versionchanged:: 0.7.4
-        The default random-intercept model is fitted for all features at once.
+        The default random intercept model is fitted for all features at once.
         Results may differ slightly from earlier versions on replicates where the
-        iterative optimizer of ``MixedLM`` stopped short of the optimum.
+        iterative optimizer of ``MixedLM`` stopped short of the optimum. Any other
+        configuration falls back to running one numeric optimization per feature
+        per draw using ``MixedLM``, which can take much longer to finish.
 
     Examples
     --------

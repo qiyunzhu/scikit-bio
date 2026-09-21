@@ -14,36 +14,43 @@ Functions
 
    get_config
    set_config
-   reset_config
 
 
 .. _configuration:
 
-Configuration options
----------------------
+Available options
+-----------------
 
-Settings apply to the current Python process and are not saved between sessions.
-Explicit function arguments override the corresponding global setting; passing
-None uses that setting. Only functions supporting an option are affected.
-See :ref:`compute_engines` for compute engine selection and requirements.
-
-Inspect all current values with ``get_config()``, or one with
-``get_config('compute_engine')``. The returned dictionary is a copy.
-
->>> from skbio import get_config, set_config, reset_config
->>> previous = get_config('compute_engine')
->>> set_config('compute_engine', 'fast')
->>> get_config('compute_engine')
-'fast'
->>> reset_config('compute_engine')
->>> get_config('compute_engine')
-'cython'
->>> set_config('compute_engine', previous)
-
-Use ``reset_config()`` to restore all defaults. The available options, their
-accepted values, and their defaults are listed below.
+The available options, their accepted values, and their defaults are listed below.
 
 {option_catalog}
+
+.. versionchanged:: 0.7.4
+    Added option ``compute_engine``.
+
+
+How to configure
+----------------
+
+Settings apply to the current Python session and are not saved between sessions.
+Explicit function parameters override the corresponding global setting. Passing
+None uses that setting. Only functions supporting an option are affected. Inspect
+all current settings with ``get_config()``, or one with ``get_config(option)``.
+The returned dictionary is a copy.
+
+The following example gets and sets the :ref:`compute engine <compute_engines>`.
+
+>>> from skbio import get_config, set_config
+
+>>> option = 'compute_engine'
+>>> previous = get_config(option)
+>>> set_config(option, 'fast')
+>>> get_config(option)
+'fast'
+
+>>> set_config(option, previous)
+>>> get_config(option)
+'cython'
 
 """  # noqa: D205, D415
 
@@ -77,7 +84,7 @@ _OPTION_DEFINITIONS = {
 }
 _SKBIO_OPTIONS = {key: spec[0] for key, spec in _OPTION_DEFINITIONS.items()}
 
-# Keep the documented catalog in sync with validation and reset defaults.
+# Keep the documented catalog in sync with validation and defaults.
 __doc__ = __doc__.replace(
     "{option_catalog}",
     "\n\n".join(
@@ -94,7 +101,7 @@ def set_config(option: str, value: Any):
     Parameters
     ----------
     option : str
-        Option to modify. See :ref:`configuration` for available options.
+        Option to modify. See :ref:`available options <configuration>`.
     value : str
         New value. Explicit function arguments override this global setting.
 
@@ -108,16 +115,6 @@ def set_config(option: str, value: Any):
     See Also
     --------
     get_config
-    reset_config
-
-    Notes
-    -----
-    Settings affect the current Python process only. Optional compute engine
-    dependencies are checked when a function uses the engine, not when setting
-    the option.
-
-    .. versionchanged:: 0.7.4
-        Added ``compute_engine``, accepting 'cython', 'numba', and 'fast'.
 
     Examples
     --------
@@ -142,8 +139,8 @@ def get_config(option: str | None = None) -> Any:
     Parameters
     ----------
     option : str or None, optional
-        Option to inspect. If None (default), return all options.
-        See :ref:`configuration` for available options.
+        Option to inspect. See :ref:`available options <configuration>`. If None
+        (default), return all options.
 
         .. versionchanged:: 0.7.4
             Can be omitted to return all options.
@@ -162,7 +159,6 @@ def get_config(option: str | None = None) -> Any:
     See Also
     --------
     set_config
-    reset_config
 
     Examples
     --------
@@ -176,46 +172,6 @@ def get_config(option: str | None = None) -> Any:
     try:
         return _SKBIO_OPTIONS[option]
     except KeyError:
-        raise KeyError(f"Unknown option: '{option}'.")
-
-
-def reset_config(option: str | None = None):
-    """Restore one or all scikit-bio configuration options to their defaults.
-
-    .. versionadded:: 0.7.4
-
-    Parameters
-    ----------
-    option : str or None, optional
-        Option to reset. If None (default), reset all options.
-        See :ref:`configuration` for options and their defaults.
-
-    Raises
-    ------
-    KeyError
-        If the option is unknown. No settings are changed.
-
-    See Also
-    --------
-    get_config
-    set_config
-
-    Examples
-    --------
-    >>> from skbio import get_config, set_config, reset_config
-    >>> previous = get_config('table_output')
-    >>> reset_config('table_output')
-    >>> get_config('table_output')
-    'pandas'
-    >>> set_config('table_output', previous)
-
-    """
-    if option is None:
-        for key, spec in _OPTION_DEFINITIONS.items():
-            _SKBIO_OPTIONS[key] = spec[0]
-    elif option in _OPTION_DEFINITIONS:
-        _SKBIO_OPTIONS[option] = _OPTION_DEFINITIONS[option][0]
-    else:
         raise KeyError(f"Unknown option: '{option}'.")
 
 
